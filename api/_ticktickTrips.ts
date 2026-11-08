@@ -2,6 +2,7 @@ import { dateTimeFormatter } from './_dateTimeFormat.js';
 import { canAdvanceEyeDrop, eyeDropShanghaiDay, isEyeDrops } from './_ticktickEyeDrops.js';
 import { currentRule, precedes } from './_rulePolicy.js';
 import { collectCompleted } from './_ticktickCompleted.js';
+import { hasNewTaskCompletion, isPendingTickTickTask } from './_ticktickTaskState.js';
 import { schedulingStage } from './_schedulingFailure.js';
 import { createCipheriv, createDecipheriv, createHash, createSecretKey, randomBytes, type KeyObject } from 'node:crypto';
 import { Lunar } from 'lunar-typescript';
@@ -725,7 +726,7 @@ export function matchCompletedOccurrences(tasks: TickTickTask[], completed: Tick
   const completedFamilies = new Set(completed.map(routineOccurrenceKey));
   const familyCounts = new Map<string, number>();
   for (const task of tasks) {
-    if ((task.status ?? 0) !== 0 || task.completedTime) continue;
+    if (!isPendingTickTickTask(task)) continue;
     const key = routineOccurrenceKey(task);
     familyCounts.set(key, (familyCounts.get(key) ?? 0) + 1);
   }
@@ -924,7 +925,7 @@ export async function syncTickTickAlwaysToday(api: TickTickApi, options: { tasks
   // A skipped eye-drop slot is already scheduled for its next occurrence.
   // Only yesterday's (or older) tagged slots need to be aligned to today.
   const needsToday = (task: TickTickTask) => !isEyeDrops(task) || isPastEyeDrop(task, today) && canAdvanceEyeDrop(task);
-  const candidates = tasks.filter(task => !options.protectedTaskIds?.has(task.id) && needsToday(task) && isAlwaysTodayTask(task) && (task.status ?? 0) === 0 && !task.completedTime);
+  const candidates = tasks.filter(task => !options.protectedTaskIds?.has(task.id) && needsToday(task) && isAlwaysTodayTask(task) && isPendingTickTickTask(task));
   if (!candidates.length) return { matched: 0, updated: 0 };
   const calendarState = options.calendarState ?? (candidates.some(task => routineScenes(task).length)
     ? await readRoutineCalendarState() : undefined);
@@ -945,12 +946,13 @@ export async function syncTickTickAlwaysToday(api: TickTickApi, options: { tasks
   const wasCompleted = matchCompletedOccurrences(tasks, completed);
   let matched = 0, updated = 0;
   for (const candidate of candidates) {
-    if (!isAlwaysTodayTask(candidate) || (candidate.status ?? 0) !== 0 || candidate.completedTime) continue;
+    if (!isAlwaysTodayTask(candidate) || !isPendingTickTickTask(candidate)) continue;
     const task = await api.getTask(candidate.projectId, candidate.id);
     if (!task || task.id !== candidate.id || task.projectId !== candidate.projectId) throw new Error('always-today 待办读取失败');
     const datesChanged = candidate.startDate !== task.startDate || candidate.dueDate !== task.dueDate;
+    const completionChanged = hasNewTaskCompletion(task, candidate);
     Object.assign(candidate, task);
-    if (!isAlwaysTodayTask(task) || !needsToday(task) || (task.status ?? 0) !== 0 || task.completedTime) continue;
+    if (!isAlwaysTodayTask(task) || !needsToday(task) || !isPendingTickTickTask(task) || completionChanged) continue;
     matched++;
     if (wasCompleted(task)) continue;
     // A new recurring occurrence may have appeared after the history snapshot.
@@ -964,7 +966,7 @@ export async function syncTickTickAlwaysToday(api: TickTickApi, options: { tasks
     const target = eyeDay ? addCalendarDays(routineTaskDate(task)!, calendarDayDifference(sceneDate, eyeDay)) : sceneDate;
     const saved = await updateRoutineTaskDate(api, task, target, true, true);
     if (!saved) continue;
-    if ((saved.status ?? 0) !== 0 || saved.completedTime || saved.projectId !== task.projectId
+    if (!isPendingTickTickTask(saved) || hasNewTaskCompletion(saved, task) || saved.projectId !== task.projectId
       || (['title', 'content', 'desc', 'priority', 'tags', 'reminders', 'parentId', 'sortOrder', 'kind'] as const)
         .some(key => JSON.stringify(saved[key] ?? null) !== JSON.stringify(task[key] ?? null))) {
       throw new Error('always-today 待办更新结果未确认');

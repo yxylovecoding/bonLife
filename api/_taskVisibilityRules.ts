@@ -5,6 +5,7 @@ import { tripDestinationQueries } from '../src/utils/tripDestinations.js';
 import { sleepWindow, inSleepFilterScope, sleepTagStateKey, type SleepTagJournal } from './_ticktickSleepTags.js';
 import { hairWashHidden, readingHidden, nightRoutineHidden, timedTaskHidden, hasHiddenTag } from './_ticktickNightRoutine.js';
 import type { TickTickTask } from './_ticktickTrips.js';
+import { isPendingTickTickTask } from './_ticktickTaskState.js';
 import type { SchedulingRuleId } from '../src/utils/schedulingRules.js';
 
 export interface LocationVisibility { names: string[]; today: string[]; unknown: boolean }
@@ -46,7 +47,7 @@ export async function visibilityInputs(projectId: string, today: string, calenda
 export function visibilityDecision(id: SchedulingRuleId, task: TickTickTask, input: {
   now: Date; timeZone: string; journal: SleepTagJournal; locations: LocationVisibility | null;
 }): boolean | null {
-  if ((task.status ?? 0) !== 0 || task.completedTime) return null;
+  if (!isPendingTickTickTask(task)) return null;
   if (id === 'visibility-location') return input.locations ? locationTaskHidden(task, input.locations) : null;
   if (id === 'visibility-reading') return readingHidden(task, input.now);
   if (id === 'visibility-hair') return hairWashHidden(task, input.now);

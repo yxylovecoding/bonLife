@@ -36,7 +36,7 @@ import { TickTickOpenApiClient, decryptTickTickToken, readAllTickTickTasks, read
   nextRoutineSceneDate, separateTickTickSprays, buildTripSourcesFromSyncState, reconcileTickTickTrips, reconcileTickTickWishPreparations,
   getTickTickRoutineExcludedTaskIds, getTickTickRoutineTargetDates, type TickTickTask, type TickTickTemplate, type TickTickConnection, type TickTickTripSyncState } from './_ticktickTrips.js';
 
-const pending = (task: TickTickTask) => (task.status ?? 0) === 0 && !task.completedTime;
+import { isPendingTickTickTask as pending } from './_ticktickTaskState.js';
 const plusDay = (date: string) => new Date(Date.parse(`${date}T12:00:00Z`) + 86400000).toISOString().slice(0, 10);
 
 interface RuleReplanResult {
@@ -490,6 +490,19 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         await kv.set(RULE_RUN_KEY, run); hasRunTrace = true; throw error;
       }
       for (const result of run.results) result.updated += draft.writeCounts.get(result.id) ?? 0;
+      // A compact, content-free confirmation for formerly skipped reopened tasks.
+      // Report only changed dates that the shared writer has read back successfully.
+      if (allowed('always-today')) {
+        const confirmed = new Map(draft.committedValues().map(task => [task.id, task]));
+        for (const original of tasks.filter(task => task.completedTime && task.status === 0 && isAlwaysTodayTask(task))) {
+          const savedTask = confirmed.get(original.id);
+          if (!savedTask || routineTaskDate(original) === routineTaskDate(savedTask) || !draft.datesConfirmed(savedTask.id)) continue;
+          console.info('[ticktick-reopened-date]', JSON.stringify({
+            titleHash: createHash('sha256').update(original.title).digest('hex').slice(0, 16),
+            date: routineTaskDate(savedTask), scope: options.scope, verified: true,
+          }));
+        }
+      }
       if (nextBudgetHidden && allowed('daily-plan') && JSON.stringify(nextBudgetHidden) !== JSON.stringify(budgetHidden)) {
         await kv.set(budgetHiddenKey, nextBudgetHidden);
       }

@@ -88,7 +88,7 @@ describe('always-today 截止日期', () => {
   });
 
   it('已完成、不带标签和刚移除标签的任务均不修改，不向子任务继承标签', async () => {
-    const tasks = [makeTask('done', { status: 2 }), makeTask('completed', { completedTime: '2026-10-20T01:00:00Z' }),
+    const tasks = [makeTask('done', { status: 2 }), makeTask('completed', { status: undefined, completedTime: '2026-10-20T01:00:00Z' }),
       makeTask('other', { tags: ['always-today-other'] }), makeTask('child', { tags: [], parentId: 'done' }), makeTask('removed')];
     const f = fixture(tasks);
     f.saved.get('removed')!.tags = ['routine'];
@@ -108,6 +108,31 @@ describe('always-today 截止日期', () => {
     expect(await syncTickTickAlwaysToday(f.api)).toEqual({ matched: 1, updated: 1 });
     expect(routineTaskDate(f.saved.get(next.id)!)).toBe('2026-10-22');
     expect(f.saved.get(next.id)?.repeatFlag).toBe(next.repeatFlag);
+  });
+
+  it('明确未完成但残留旧完成时间的子任务仍固定今天，保留原字段', async () => {
+    const original = makeTask('reopened', { title: 'transformer', parentId: 'parent', tags: ['always-today', '班'],
+      completedTime: '2026-09-17T04:14:43.000+0000', content: '(1.5h)', priority: 3 });
+    const f = fixture([original]);
+    expect(await syncTickTickAlwaysToday(f.api)).toEqual({ matched: 1, updated: 1 });
+    expect(f.saved.get(original.id)).toEqual({ ...original, dueDate: `${day}T00:00:00+0800` });
+    expect(await syncTickTickAlwaysToday(f.api)).toEqual({ matched: 1, updated: 0 });
+  });
+
+  it('残留完成时间的未完成系列仍遵守当天完成保护', async () => {
+    const original = makeTask('next', { title: 'fixed', repeatFlag: 'RRULE:FREQ=DAILY', completedTime: '2026-09-17T04:14:43Z' });
+    const f = fixture([original]);
+    f.completed.mockResolvedValue([{ ...original, id: 'old', status: 2, completedTime: `${day}T00:00:00+08:00` }]);
+    expect(await syncTickTickAlwaysToday(f.api)).toEqual({ matched: 1, updated: 0 });
+    expect(f.updateTask).not.toHaveBeenCalled();
+  });
+
+  it('历史读取后出现新的完成时间，即使状态仍为零也不覆盖', async () => {
+    const original = makeTask('reread', { completedTime: '2026-09-17T04:14:43Z' });
+    const f = fixture([original]);
+    f.getTask.mockResolvedValueOnce({ ...original, completedTime: `${day}T00:00:00+08:00` });
+    await syncTickTickAlwaysToday(f.api, { tasks: [original] });
+    expect(f.updateTask).not.toHaveBeenCalled();
   });
 
   it('按上海日期识别 UTC 完成时间，确切任务 ID 匹配不依赖名称或重复标签', async () => {

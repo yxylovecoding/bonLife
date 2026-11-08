@@ -202,6 +202,33 @@ describe('城市待办日期', () => {
   });
 });
 
+describe('残留完成时间的固定今日任务', () => {
+  it.each(['full', 'hourly', 'visibility'] as const)('%s 将明确未完成的子任务移到今天，写后确认且重复执行不重写', async scope => {
+    const info = vi.spyOn(console, 'info');
+    const original = task('reopened', { title: 'transformer', parentId: 'parent', tags: ['always-today', '班'],
+      dueDate: '2026-11-02T00:00:00+0800', completedTime: '2026-09-17T04:14:43.000+0000', content: '(1.5h)', priority: 3 });
+    m.tasks = [structuredClone(original)];
+    const result = await runRuleReplan({ scope, visibilityKind: 'all' });
+    expect(status(result, 'always-today')).toMatchObject({ status: 'success', updated: 1 });
+    expect(m.tasks[0]).toEqual({ ...original, dueDate: `${day}T00:00:00+0800` });
+    expect(info).toHaveBeenCalledWith('[ticktick-reopened-date]', JSON.stringify({
+      titleHash: createHash('sha256').update(original.title).digest('hex').slice(0, 16), date: day, scope, verified: true,
+    }));
+    expect(m.write).toHaveBeenCalledOnce();
+    info.mockRestore();
+    await runRuleReplan({ scope, visibilityKind: 'all' });
+    expect(m.write).toHaveBeenCalledOnce();
+  });
+  it('同日放弃保护仍覆盖带旧完成时间的重复系列', async () => {
+    const original = task('reopened', { tags: ['always-today'], repeatFlag: 'RRULE:FREQ=DAILY',
+      completedTime: '2026-09-17T04:14:43Z', dueDate: '2026-11-04T00:00:00+0800' });
+    m.tasks = [structuredClone(original)];
+    m.abandoned = [{ ...original, id: 'old', status: -1, completedTime: `${day}T08:00:00+08:00` }];
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks[0]).toEqual(original); expect(m.write).not.toHaveBeenCalled();
+  });
+});
+
 describe('日期优先级与失败传播', () => {
   it.each([false, true])('洗衣与固定今日冲突使用真实拖动顺序（洗衣优先 %s），合并后只写一次', async laundryFirst => {
     m.tasks = [task('wash', { title: '洗衣服', tags: ['always-today'], dueDate: '2026-11-09T00:00:00+0800' })];
@@ -332,8 +359,8 @@ describe('小时轮换保留原业务边界', () => {
     expect(next.details?.selected.map(item => item.id)).toContain('书衣');
     expect(m.tasks[0].tags).toEqual(['居']);
   });
-  it.each(['full', 'hourly'] as const)('%s 不把带完成时间的记录交给普通轮换，其他未完成任务仍按剩余时间延期', async scope => {
-    const completed = task('a-completed', { completedTime: '2026-11-02T10:00:00+0800', content: '(1h)' });
+  it.each(['full', 'hourly'] as const)('%s 不把缺少状态但带完成时间的记录交给普通轮换，其他未完成任务仍按剩余时间延期', async scope => {
+    const completed = task('a-completed', { status: undefined, completedTime: '2026-11-02T10:00:00+0800', content: '(1h)' });
     m.tasks = [structuredClone(completed), task('b-selected'), task('c-deferred')];
     const result = await runRuleReplan({ scope });
     expect(status(result, 'daily-plan').status).toBe('success');

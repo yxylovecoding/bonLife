@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { TickTickApi, TickTickTask } from './_ticktickTrips.js';
 import type { SchedulingRuleId, SchedulingRuleResult } from '../src/utils/schedulingRules.js';
 import { isHiddenTag, withHiddenTag } from './_ticktickHiddenTag.js';
+import { hasNewTaskCompletion, isPendingTickTickTask as pending } from './_ticktickTaskState.js';
 
 const fields = ['title', 'content', 'desc', 'startDate', 'dueDate', 'isAllDay', 'timeZone', 'reminders', 'tags', 'repeatFlag', 'repeatFrom', 'priority', 'sortOrder', 'kind', 'parentId', 'items'] as const;
 const ordered = (value: unknown): unknown => Array.isArray(value) ? value.map(ordered)
@@ -22,7 +23,6 @@ const persistedField = (key: string, a: unknown, b: unknown): boolean => same(em
   || key === 'tags' && Array.isArray(a) && Array.isArray(b) && same([...a].sort(), [...b].sort())
   || (key === 'startDate' || key === 'dueDate') && typeof a === 'string' && typeof b === 'string'
     && Number.isFinite(Date.parse(a)) && Date.parse(a) === Date.parse(b);
-const pending = (t: TickTickTask) => (t.status ?? 0) === 0 && !t.completedTime;
 const dateFields = new Set<string>(['startDate', 'dueDate', 'isAllDay', 'timeZone', 'items']);
 const group = (key: string) => dateFields.has(key) ? 'date' : key;
 const ruleGroup = (id: SchedulingRuleId, key: string) => id === 'template-content' && key === 'items' ? 'template-items' : group(key);
@@ -208,7 +208,7 @@ export class RuleTaskDraft {
     const changed = this.values().filter(task => !this.created.has(task.id) && fields.some(k => !same(task[k], this.original.get(task.id)?.[k])));
     const allowed = (id: SchedulingRuleId | undefined) => !id || !options || options.allowed(id);
     const ownerIds = (id: string) => [...new Set(this.owners.get(id)?.values() ?? [])];
-    const validState = (fresh: TickTickTask, original: TickTickTask) => pending(fresh) && pending(original)
+    const validState = (fresh: TickTickTask, original: TickTickTask) => pending(fresh) && pending(original) && !hasNewTaskCompletion(fresh, original)
       || !pending(original) && same(fresh.status, original.status) && same(fresh.completedTime, original.completedTime)
         && ownerIds(original.id).every(id => id === 'template-content' || id === 'moving-date');
     const verify = (fresh: TickTickTask | undefined, expected: TickTickTask, original: TickTickTask, phase: 'before' | 'after') => {

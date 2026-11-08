@@ -1,6 +1,6 @@
 import { calendarDateInTimeZone, routineOccurrenceKey, type TickTickApi, type TickTickTask } from './_ticktickTrips.js';
 
-const pending = (task: TickTickTask) => (task.status ?? 0) === 0 && !task.completedTime;
+import { isPendingTickTickTask as pending } from './_ticktickTaskState.js';
 const identity = (task: TickTickTask) => JSON.stringify([task.projectId, task.id]);
 
 // Abandoning an occurrence advances the repeating task just like completion,

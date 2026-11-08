@@ -142,6 +142,20 @@ describe('最终任务改动裁决', () => {
     await expect(draft.commit()).rejects.toThrow('待办已变化，未写入（content）');
     expect(c.write).not.toHaveBeenCalled();
   });
+  it.each(['before', 'after'] as const)('残留旧完成时间可写，但 %s 新增完成时间仍停止确认', async phase => {
+    const original = task({ status: 0, completedTime: '2026-09-17T04:14:43Z' });
+    const c = client(); c.tasks.set('one', structuredClone(original));
+    const draft = new RuleTaskDraft(c.api, [original]);
+    const branch = draft.branch('always-today');
+    await branch.api.updateTask('one', { dueDate: '2026-11-03T00:00:00+0800' }); branch.accept();
+    if (phase === 'before') c.tasks.get('one')!.completedTime = '2026-11-03T04:00:00Z';
+    else c.write.mockImplementation(async (id, payload) => {
+      c.tasks.set(id, { ...c.tasks.get(id)!, ...payload, completedTime: '2026-11-03T04:00:00Z' }); return c.tasks.get(id)!;
+    });
+    await expect(draft.commit()).rejects.toThrow(phase === 'before' ? '待办已变化' : '写后回读不一致');
+    expect(c.write).toHaveBeenCalledTimes(phase === 'before' ? 0 : 1);
+    expect(draft.datesConfirmed('one')).toBe(false);
+  });
   it('标签在详情和写后回读中重排时仍确认显隐，不改其他标签', async () => {
     const c = client(), draft = new RuleTaskDraft(c.api, [task()]);
     c.tasks.get('one')!.tags!.reverse();
