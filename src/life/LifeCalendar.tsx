@@ -12,7 +12,8 @@ import { LifeError, lifeRequest, readDraft, type LifeDraft } from './client';
 import LifeEditor from './LifeEditor';
 import LifeConnection from './LifeConnection';
 import LifeCycleSettings from './LifeCycleSettings';
-import LifeDoneList from './LifeDoneList';
+import LifePlanDetails from './LifePlanDetails';
+import { useOrchestrate } from './useOrchestrate';
 import LifeOrchestrator from './LifeOrchestrator';
 import { useLifeTraining } from './useLifeTraining';
 import { DEFAULT_TRAINING_SETTINGS, monthlyTrainingPlan, plannedTraining, rollingTrainingPlan, trainingIdentity, trainingLibrary } from '../utils/lifeTraining';
@@ -23,6 +24,7 @@ import { symptomColor } from './symptomColor';
 import { calendarStripSegments, lifeCalendarStripItems, type CalendarStripItem } from './calendarStrips';
 
 const LifeBodyTrends = lazy(() => import('./LifeBodyTrends'));
+const LifeDoneList = lazy(() => import('./LifeDoneList'));
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date());
@@ -39,6 +41,7 @@ function initialDate(draft: LifeDraft | null) {
 }
 
 export default function LifeCalendar({ owner, onExpired }: { owner: string; onExpired: () => void }) {
+  const orche = useOrchestrate(onExpired);
   const [draft, setDraft] = useState<LifeDraft | null>(() => readDraft(owner));
   const [selection, setSelection] = useState(() => initialDate(draft));
   const { year, month, kind } = selection;
@@ -171,9 +174,20 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
   }
 
   return <main className="life-shell">
-    <header className="life-header"><h1><span className="life-brand-dot" />BonLog</h1>
+    <header className="life-header"><div className="life-header-brand"><h1><span className="life-brand-dot" />BonLog</h1>
+      <div className="life-orche-actions">
+        <button disabled={orche.replanning} title={orche.replanMessage || undefined} onClick={() => void orche.triggerReplan()}>{orche.replanning ? '提交中…' : 'Orche'}</button>
+        <button className="life-plan-trigger" aria-expanded={orche.detailsOpen} aria-controls="life-orche-details" onClick={orche.toggleDetails}>have orchestrated</button>
+      </div></div>
       <div className="life-header-actions"><InstallApp app="log" /><button aria-haspopup="dialog" aria-controls="life-orchestrator" onClick={() => setOrchestratorOpen(true)}>Orchestrator</button>
         <button onClick={() => void logout()} disabled={loggingOut}>{loggingOut ? '退出中…' : '退出'}</button></div></header>
+    <span className="sr-only" role="status">{orche.replanning ? '正在提交 Orchestrate…' : orche.replanMessage}</span>
+    {orche.replanError && <p className="life-error" role="alert">{orche.replanError}</p>}
+    {orche.detailsOpen && <section id="life-orche-details" aria-label="当前排期" aria-busy={orche.detailsLoading}>
+      {orche.detailsLoading ? <p className="life-empty-state" role="status">读取中…</p>
+        : orche.detailsError ? <p className="life-error" role="alert">{orche.detailsError}</p>
+          : orche.planDetails ? <LifePlanDetails plan={orche.planDetails} /> : <p className="life-empty-state">暂无排期记录</p>}
+    </section>}
     <div className="life-toolbar">
       <nav className="life-tabs" aria-label="状态日历">{(['skin', 'eyes', 'discomfort', 'mood', 'training', 'done'] as const).map((value) => <button key={value}
         aria-pressed={(kind === 'body' ? 'training' : kind) === value} onClick={() => { setSelection((previous) => ({ ...previous, kind: value,
@@ -232,7 +246,7 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
         onPeriodChange={(period) => setSelection((previous) => ({ ...previous, ...period }))}
         onEdit={(date) => openEntry({ date, kind: 'body', text: '', revision: '', ...current?.entries[`body:${date}`], mutationId: crypto.randomUUID() })} />
     </Suspense>}
-    {kind === 'done' ? <LifeDoneList onExpired={onExpired} recordsControlsTarget={recordsControlsTarget} /> : kind !== 'body' && <section className={`life-calendar${kind === 'training' ? ' life-training-calendar' : kind === 'skin' || kind === 'eyes' || kind === 'discomfort' ? ' life-symptom-calendar' : ''}`} aria-label={`${year}年${month}月${LIFE_LABELS[kind]}日历`} aria-busy={loading}>
+    {kind === 'done' ? <Suspense fallback={<p className="life-empty-state" role="status">读取周本…</p>}><LifeDoneList onExpired={onExpired} recordsControlsTarget={recordsControlsTarget} replanning={orche.replanning} /></Suspense> : kind !== 'body' && <section className={`life-calendar${kind === 'training' ? ' life-training-calendar' : kind === 'skin' || kind === 'eyes' || kind === 'discomfort' ? ' life-symptom-calendar' : ''}`} aria-label={`${year}年${month}月${LIFE_LABELS[kind]}日历`} aria-busy={loading}>
       <div className="life-weekdays">{WEEKDAYS.map((day) => <span key={day}>{day}</span>)}</div>
       <div className="life-days">{cells.map((date, index) => {
         if (!date) return <div className="life-empty-day" key={`empty-${index}`} aria-hidden="true" />;

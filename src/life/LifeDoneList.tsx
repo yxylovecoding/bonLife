@@ -1,13 +1,10 @@
 import { createPortal } from 'react-dom';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { DoneItem } from '../utils/bonLife';
-import type { TickTickPlanDetails } from '../utils/tickTickPlanDetails';
-import { requestWithRetry } from '../utils/requestWithRetry';
 import { accountFetch } from '../utils/authClient';
 import { doneCategory, doneWeekDates, doneWeekMonths, doneWeekNumber, earlierDoneWeeks, computeDoneDurations, groupDoneWeek, shiftDoneDate } from '../utils/lifeDone';
 import { squarifiedTreemap } from '../utils/squarifiedTreemap';
 import { useDoneRecords } from './useDoneRecords';
-import LifePlanDetails from './LifePlanDetails';
 import { markedTaskMinutes } from '../utils/taskDuration';
 
 const shanghaiToday = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date());
@@ -77,19 +74,11 @@ function DoneDay({ date, index, items, today, pending, busy, error }: {
   </section>;
 }
 
-export default function LifeDoneList({ onExpired, recordsControlsTarget }: { onExpired: () => void; recordsControlsTarget?: HTMLDivElement | null }) {
+export default function LifeDoneList({ onExpired, recordsControlsTarget, replanning = false }: { onExpired: () => void; recordsControlsTarget?: HTMLDivElement | null; replanning?: boolean }) {
   const [today, setToday] = useState(shanghaiToday);
   const thisWeek = doneWeekDates(today)[0];
   const [weeks, setWeeks] = useState(() => [...earlierDoneWeeks(thisWeek, 1), thisWeek]);
   const { data, months, errors, busy, refresh } = useDoneRecords(weeks[0], today, onExpired);
-  const [replanning, setReplanning] = useState(false);
-  const [replanMessage, setReplanMessage] = useState('');
-  const [planDetails, setPlanDetails] = useState<TickTickPlanDetails | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const [detailsError, setDetailsError] = useState('');
-  const detailsController = useRef<AbortController | null>(null);
-  const [replanError, setReplanError] = useState('');
-  const replanController = useRef<AbortController | null>(null);
   const refreshedAt = useRef(Date.now());
   const strip = useRef<HTMLDivElement>(null);
   const earlierSpace = useRef<HTMLDivElement>(null);
@@ -97,30 +86,6 @@ export default function LifeDoneList({ onExpired, recordsControlsTarget }: { onE
   const beforePrepend = useRef<{ width: number; left: number } | null>(null);
   const goToLatest = useRef(false);
   const [atLatest, setAtLatest] = useState(true);
-  async function triggerReplan() {
-    if (busy || replanController.current) return;
-    const request = new AbortController(); replanController.current = request;
-    const timer = window.setTimeout(() => request.abort(), 20_000);
-    setReplanning(true); setReplanError(''); setReplanMessage('');
-    try {
-      const response = await accountFetch('/api/ticktick-trips?action=trigger-replan', {
-        method: 'POST', credentials: 'same-origin', signal: request.signal,
-      });
-      if (response.status === 401) { onExpired(); return; }
-      const result = await response.json() as { triggered?: boolean; error?: string };
-      if (!response.ok || !result.triggered) throw new Error(result.error || 'Orchestrate 提交失败，请重试');
-      if (!request.signal.aborted) setReplanMessage('Orchestrate 已提交');
-    } catch (cause) {
-      if (!request.signal.aborted) setReplanError(cause instanceof TypeError
-        ? 'Orchestrate 提交失败，请检查网络后重试' : cause instanceof Error ? cause.message : 'Orchestrate 提交失败，请重试');
-      else setReplanError('Orchestrate 提交结果暂未确认，请稍后查看更新结果');
-    } finally {
-      clearTimeout(timer);
-      if (replanController.current === request) replanController.current = null;
-      setReplanning(false);
-    }
-  }
-  useEffect(() => () => { replanController.current?.abort(); }, []);
   // 页面打开时自动静默触发一次 Orchestrate，等价于用户点击「Orche」按钮，
   // 不走组件状态，避免打扰用户；失败也静默忽略。
   useEffect(() => {
@@ -139,23 +104,9 @@ export default function LifeDoneList({ onExpired, recordsControlsTarget }: { onE
     return () => { clearTimeout(timer); controller.abort(); };
   }, []);
   useEffect(() => {
-    const request = new AbortController(); detailsController.current = request;
-    setDetailsError('');
-    void requestWithRetry(async signal => {
-      const response = await accountFetch('/api/ticktick-trips?action=plan-details', { credentials: 'same-origin', signal });
-      if (response.status === 401) { onExpired(); return null; }
-      const data = await response.json() as { details?: TickTickPlanDetails | null; error?: string };
-      if (!response.ok) throw new Error(data.error || '排期详情读取失败');
-      return data.details ?? null;
-    }, { signal: request.signal, retry: true, timeoutMessage: '排期详情读取超时，请刷新重试', networkMessage: '排期详情读取失败，请刷新重试' })
-      .then(details => { if (!request.signal.aborted) setPlanDetails(details); })
-      .catch(cause => { if (!request.signal.aborted) setDetailsError(cause instanceof Error ? cause.message : '排期详情读取失败'); });
-    return () => request.abort();
-  }, [today, onExpired]);
-  useEffect(() => {
     const update = () => {
       setToday(shanghaiToday());
-      if (!replanController.current && document.visibilityState === 'visible' && Date.now() - refreshedAt.current >= 300_000) {
+      if (!replanning && document.visibilityState === 'visible' && Date.now() - refreshedAt.current >= 300_000) {
         refreshedAt.current = Date.now();
         refresh('refresh');
       }
@@ -163,7 +114,7 @@ export default function LifeDoneList({ onExpired, recordsControlsTarget }: { onE
     window.addEventListener('focus', update); document.addEventListener('visibilitychange', update);
     const timer = window.setInterval(update, 300_000);
     return () => { clearInterval(timer); window.removeEventListener('focus', update); document.removeEventListener('visibilitychange', update); };
-  }, [refresh]);
+  }, [refresh, replanning]);
   useEffect(() => {
     if (weeks[weeks.length - 1] >= thisWeek) return;
     goToLatest.current = atLatest;
@@ -217,18 +168,10 @@ export default function LifeDoneList({ onExpired, recordsControlsTarget }: { onE
       <button className="life-today" onClick={() => strip.current?.scrollTo({ left: strip.current.scrollWidth, behavior: 'smooth' })}>本周</button>
       <button className="life-arrow" aria-label="下一周" disabled={atLatest} onClick={() => move(1)}>›</button>
     </nav></div>
-    <div className="life-done-toolbar"><span>{planDetails && <button className="life-plan-trigger" aria-expanded={detailsOpen} aria-controls="life-plan-details" onClick={() => setDetailsOpen(open => !open)}>
-      have orchestrated
-    </button>}</span>
-      <div className="life-done-actions"><button disabled={busy || replanning} title={replanMessage || undefined} onClick={() => void triggerReplan()}>{replanning ? '提交中…' : 'Orche'}</button></div></div>
-    <span className="sr-only" role="status">{replanning ? '正在提交 Orchestrate…' : replanMessage}</span>
     {recordsControlsTarget && createPortal(<div className="life-orchestrator-records">
       <span role="status">{busy ? '同步中…' : syncedAt ? `${completionTime.format(new Date(syncedAt))} 已同步` : '尚未同步'}</span>
       <button type="button" disabled={busy || replanning} onClick={() => refresh('force')}>同步记录</button>
     </div>, recordsControlsTarget)}
-    {replanError && <p className="life-error" role="alert">{replanError}</p>}
-    {detailsError && <p className="life-error" role="alert">{detailsError}</p>}
-    {detailsOpen && planDetails && <LifePlanDetails plan={planDetails} />}
     {Object.entries(errors).map(([key, error]) => <p className="life-error" role="alert" key={key}>{key.replace('-', ' 年 ')} 月 · {error}</p>)}
     {months.some((value) => value && !value.connected) && <p className="life-empty-state">TickTick 未连接 · <a href="https://bill.bonbills.cn/calendar" target="_blank" rel="noreferrer">连接 TickTick ↗</a></p>}
     <div ref={strip} className="life-week-strip" role="region" aria-label="连续周本，向左查看更早记录" tabIndex={0} onScroll={(event) => {

@@ -4,7 +4,12 @@
 .bonlife button:disabled { cursor: default; opacity: .5; }
 .bonlife :focus-visible { outline: 2px solid #76886f; outline-offset: 3px; }
 .life-shell { max-width: 1120px; margin: 0 auto; padding: 40px 28px 56px; }
-.life-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 44px; }
+.life-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 44px; }
+.life-header-brand { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 22px; min-width: 0; }
+.life-header-brand h1 { flex-shrink: 0; }
+.life-orche-actions { display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--life-muted); }
+.life-orche-actions button { padding: 6px 0; color: var(--life-accent); white-space: nowrap; }
+.life-orche-actions .life-plan-trigger { color: inherit; border-radius: 0; text-decoration: underline dashed; text-underline-offset: 4px; text-decoration-thickness: 1px; }
 .life-header h1 { margin: 0; display: flex; align-items: center; gap: 10px; font-size: 21px; font-weight: 600; letter-spacing: -.6px; }
 .life-brand-dot { width: 13px; height: 13px; border-radius: 50% 50% 50% 2px; background: #78836e; transform: rotate(-20deg); }
 .life-header-actions { display: flex; gap: 16px; }
@@ -161,7 +166,6 @@
 .life-done-toolbar { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; align-items: center; padding: 16px 0; font-size: 11px; color: var(--life-muted); }
 .life-done-actions { display: flex; align-items: center; gap: 16px; }
 .life-done-toolbar button { color: var(--life-accent); padding: 5px 0; }
-.life-done-toolbar .life-plan-trigger { color: inherit; border-radius: 0; text-align: left; text-decoration-line: underline; text-decoration-style: dashed; text-underline-offset: 4px; text-decoration-thickness: 1px; }
 .life-plan-details { margin-bottom: 22px; padding: 0 0 20px; border-bottom: 1px solid var(--life-line); font-size: 12px; line-height: 1.8; }
 .life-plan-details section { margin-top: 20px; }
 .life-plan-details h3 { font-size: 13px; font-weight: 500; margin: 0 0 10px; }
@@ -266,6 +270,8 @@
   .life-tabs { width: 100%; }
   .life-tabs button { flex: 1 0 auto; min-width: max-content; padding: 8px 6px; }
   .life-header-actions { gap: 12px; }
+  .life-header-brand { gap: 10px 14px; }
+  .life-orche-actions { gap: 12px; font-size: 11px; }
   .life-phase-row { grid-template-columns: 76px 1fr; gap: 3px 8px; padding-left: 8px; }
   .life-phase-name { grid-row: span 2; }
   .life-phase-row p:last-child { grid-column: 2; }
