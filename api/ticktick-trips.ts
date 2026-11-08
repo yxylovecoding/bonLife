@@ -179,6 +179,18 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       // recurring occurrence even after the user has completed the original.
       return res.status(410).json({ error: '该次电动车安排已结束，不再重放' });
     }
+    if (req.query?.action === 'task-status') {
+      if (req.method !== 'GET') return res.status(405).json({ error: 'method not allowed' });
+      const title = typeof req.query.title === 'string' ? req.query.title.trim() : '';
+      if (!title || title.length > 200) return res.status(400).json({ error: '请提供要核对的任务标题' });
+      const connection = await kv.get<TickTickConnection>(CONNECTION_KEY);
+      if (!connection) return res.status(200).json({ connected: false, tasks: [] });
+      const { decryptTickTickToken, TickTickOpenApiClient, readRoutineCalendarState } = await import('./_ticktickTrips.js');
+      const { inspectTickTickTaskDate } = await import('./_ticktickTaskStatus.js');
+      const api = new TickTickOpenApiClient(decryptTickTickToken(connection.encryptedToken, getSyncSecret()),
+        (process.env.TICKTICK_API_BASE_URL || '').trim() || undefined);
+      return res.status(200).json({ connected: true, ...await inspectTickTickTaskDate(api, title, await readRoutineCalendarState()) });
+    }
     if (req.query?.action === 'pickup-status') {
       if (req.method !== 'GET') return res.status(405).json({ error: 'method not allowed' });
       const connection = await kv.get<TickTickConnection>(CONNECTION_KEY);

@@ -254,6 +254,8 @@ BonLog 右上角「Orchestrator」统一收纳规则优先级、Outlook 状态�
 
 ## 10. 维护入口
 
+Orchestrator 的「待办日期核对」通过鉴权的 `GET /api/ticktick-trips?action=task-status&title=任务标题` 只读核对同名任务的列表快照与详情日期、状态、标签，以及当天完成／放弃保护和最近场景日。仅返回排期字段，不返回备注、检查项内容或凭据；核对操作不触发 Orchestrate，也不修改待办。
+
 CPU 优化只复用时区格式器、单次计算的时刻边界和单次读取的日历解析结果；不降低同步频率，不缓存过期日程，不改变挑选顺序和写入核对。测量与边界见 [CPU 优化验证](cpu-optimization.md)。
 
 项目中的规则来源与实现文件：

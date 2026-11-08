@@ -1,5 +1,6 @@
 import { useEffect, useRef, type Ref } from 'react';
 import LifeSchedulingRules from './LifeSchedulingRules';
+import LifeTaskDateStatus from './LifeTaskDateStatus';
 
 export default function LifeOrchestrator({ onClose, onExpired, onManageOutlook, onManageCycle, cycleDisabled, recordsControlsRef }: {
   onClose: () => void;
@@ -22,6 +23,7 @@ export default function LifeOrchestrator({ onClose, onExpired, onManageOutlook, 
         </div>
         {recordsControlsRef && <div ref={recordsControlsRef} />}
         <LifeSchedulingRules onExpired={onExpired} onManageOutlook={onManageOutlook} />
+        <LifeTaskDateStatus onExpired={onExpired} />
       </div>
       <div className="life-editor-actions"><button type="button" onClick={onClose}>关闭</button></div>
     </div>
