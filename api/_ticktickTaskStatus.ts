@@ -7,7 +7,7 @@ import { calendarDateInTimeZone, isAlwaysTodayTask, matchCompletedOccurrences, n
 // connection credentials, or unrelated completion history.
 function dateFields(task: TickTickTask) {
   return { id: task.id, projectId: task.projectId, title: task.title, parentId: task.parentId,
-    status: task.status, completedTime: task.completedTime, tags: task.tags,
+    status: task.status, completedTime: task.completedTime, tags: task.tags, priority: task.priority,
     startDate: task.startDate, dueDate: task.dueDate, isAllDay: task.isAllDay,
     timeZone: task.timeZone, repeatFlag: task.repeatFlag };
 }

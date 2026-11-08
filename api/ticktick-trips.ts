@@ -187,9 +187,18 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       if (!connection) return res.status(200).json({ connected: false, tasks: [] });
       const { decryptTickTickToken, TickTickOpenApiClient, readRoutineCalendarState } = await import('./_ticktickTrips.js');
       const { inspectTickTickTaskDate } = await import('./_ticktickTaskStatus.js');
-      const api = new TickTickOpenApiClient(decryptTickTickToken(connection.encryptedToken, getSyncSecret()),
+      const token = decryptTickTickToken(connection.encryptedToken, getSyncSecret());
+      const api = new TickTickOpenApiClient(token,
         (process.env.TICKTICK_API_BASE_URL || '').trim() || undefined);
-      return res.status(200).json({ connected: true, ...await inspectTickTickTaskDate(api, title, await readRoutineCalendarState()) });
+      const calendarState = await readRoutineCalendarState();
+      const inspection = await inspectTickTickTaskDate(api, title, calendarState);
+      const { inspectTickTickVisibility } = await import('./_ticktickVisibilityStatus.js');
+      const visibility = await inspectTickTickVisibility(inspection.tasks.map(t => t.current), {
+        connectionId: createHash('sha256').update(token).digest('hex'), projectId: connection.projectId,
+        today: inspection.today, calendarState, timeZone: connection.timeZone,
+      });
+      return res.status(200).json({ connected: true, ...inspection,
+        tasks: inspection.tasks.map((task, index) => ({ ...task, visibility: visibility[index] })) });
     }
     if (req.query?.action === 'pickup-status') {
       if (req.method !== 'GET') return res.status(405).json({ error: 'method not allowed' });
