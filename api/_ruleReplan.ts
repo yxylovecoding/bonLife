@@ -13,6 +13,7 @@ import { visibilityInputs, visibilityRules, visibilityDecision } from './_taskVi
 import { sleepWindow, sleepTagStateKey } from './_ticktickSleepTags.js';
 import { hasHiddenTag } from './_ticktickNightRoutine.js';
 import { withHiddenTag } from './_ticktickHiddenTag.js';
+import { nextTaskLocationDate, taskCityTags, taskLocationAllowed } from './_ticktickLocation.js';
 import { syncOutlookCalendar, saveOutlookSnapshot, OUTLOOK_CONNECTION_KEY, type OutlookConnection } from './_outlookSync.js';
 import { decryptOutlookConnection, readOutlookSnapshot } from './_outlookCalendar.js';
 import { applyOutlookSnapshotToState, type OutlookAvailability } from '../src/utils/outlookCalendar.js';
@@ -231,7 +232,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           overBudget = result.overBudget;
         });
       }
-      if (options.scope === 'full' && !sleeping) {
+      if (options.scope !== 'visibility' && !sleeping) {
         plan('scene-date', async branch => {
           const tagMap = (calendarState as { tagMap?: Record<string, string> }).tagMap ?? {};
           const values = draft.values();
@@ -240,6 +241,21 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           for (const task of values.filter(t => pending(t) && !excluded.has(t.id) && !isAlwaysTodayTask(t) && !isEyeDrops(t) && !isElectricVehiclePickup(t))) {
             if (followsHairWash(task) && precedes('hair-follow', 'scene-date')) continue;
             const recurrence = routineRecurrence(task.repeatFlag), scenes = routineScenes(task);
+            const cities = taskCityTags(task, calendarState);
+            if (cities.length) {
+              if (!visibility.locations) throw new Error('地点读取失败，保留当前排期');
+              if (recurrence === 'unknown' || taskLocationAllowed(task, calendarState, today)) continue;
+              const original = routineTaskDate(task);
+              if (original && original > today && taskLocationAllowed(task, calendarState, original)) continue;
+              // Keep a future deadline as the lower bound; overdue tasks can
+              // move beyond the ordinary rotation's 30-day candidate window.
+              const from = original && original > today ? original
+                : recurrence === 'daily' && wasCompleted(task) ? plusDay(today) : today;
+              const date = nextTaskLocationDate(task, calendarState, from);
+              if (date) await branch.api.updateTask(task.id, routineTaskPayload(task, date));
+              continue;
+            }
+            if (options.scope !== 'full') continue;
             if (!scenes.length || recurrence === 'unknown') continue;
             const scene = tagMap[today] === 'home' ? 'home' : tagMap[today] === 'travel' ? 'travel' : ['intern', 'school'].includes(tagMap[today]) ? 'school' : null;
             if (recurrence === 'long' && !scene) continue;
@@ -253,10 +269,13 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             if (date) await branch.api.updateTask(task.id, routineTaskPayload(task, date));
           }
         });
+      }
+      if (options.scope === 'full' && !sleeping) {
         plan('repeat-date', async branch => {
           const targets = getTickTickRoutineTargetDates(calendarState, today);
           branch.claimDates(draft.values().filter(t => pending(t) && !excluded.has(t.id) && !isAlwaysTodayTask(t) && !isEyeDrops(t) && !isElectricVehiclePickup(t)
             && routineRecurrence(t.repeatFlag) === 'long' && routineTaskDate(t)
+            && (!taskCityTags(t, calendarState).length || taskLocationAllowed(t, calendarState, today))
             && routineScenes(t).some(scene => scene !== 'home' && targets[scene] === today)).map(t => t.id));
         });
         plan('hair-follow', async branch => {
@@ -329,7 +348,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           : id === 'moving-date' || id === 'template-content' ? Boolean(task.parentId) || task.title.includes('搬家-')
           : id.startsWith('laundry') ? isLaundryTask(task) : id === 'hair-follow' ? followsHairWash(task)
           : id === 'always-today' ? (task.tags ?? []).includes('always-today')
-          : id === 'scene-date' || id === 'repeat-date' || id === 'scene-eligibility' ? routineScenes(task).length > 0
+          : id === 'scene-date' || id === 'repeat-date' || id === 'scene-eligibility' ? routineScenes(task).length > 0 || taskCityTags(task, calendarState).length > 0
           : id === 'sprays' ? /香香喷雾|除螨喷雾/.test(task.title)
           : id === 'minimum-interval' ? (task.tags ?? []).includes('at-least')
           : ['daily-plan', 'oldest', 'urgency', 'important'].includes(id) ? (task.priority ?? 0) !== 5 && !(task.tags ?? []).some(t => ['routine', '不关我事'].includes(t))

@@ -4,6 +4,7 @@ import { runRuleReplan } from './_ruleReplan';
 import { replanRemainingToday } from './_ticktickReplan';
 import { defaultRuleConfig, readRuleConfig, removeSchedulingRule, type SchedulingRuleId } from '../src/utils/schedulingRules';
 import { DAILY_PLAN_KEY, DAILY_PLAN_SETTINGS_KEY } from './_ticktickDailyPlan';
+import { BEIJING, GUANGZHOU } from '../src/utils/internship';
 import type { TickTickTask } from './_ticktickTrips';
 
 const m = vi.hoisted(() => ({ data: new Map<string, any>(), tasks: [] as TickTickTask[], history: [] as TickTickTask[], abandoned: [] as TickTickTask[], abandonedRead: vi.fn(),
@@ -143,6 +144,61 @@ describe('统一显隐裁决', () => {
   it('夜间入口只维护显隐和运动，不扩大到完整重排', async () => {
     await runRuleReplan({ scope: 'visibility', visibilityKind: 'night' }); expect(m.exercise).toHaveBeenCalledOnce();
     for (const fn of [m.fullOutlook, m.trip, m.wish, m.laundry, m.hairOutlook]) expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe('城市待办日期', () => {
+  const arrival = '2027-02-12';
+  beforeEach(() => {
+    m.city = '广州';
+    m.data.set('app-config', { config: { schoolCity: BEIJING, homeCity: GUANGZHOU } });
+    m.data.set('calendar-tags', { tagMap: { [day]: 'home', '2027-02-11': 'home', [arrival]: 'school', '2027-02-13': 'school' } });
+  });
+  it.each(['full', 'hourly'] as const)('%s 将已隐藏的过期北京待办跨年顺延并保持重复、提醒和时刻，重试幂等', async scope => {
+    const original = task('beijing', { tags: ['hidden', '北京市', '玩'], dueDate: '2026-11-01T15:30:00+0800',
+      startDate: '2026-11-01T14:30:00+0800', isAllDay: false, priority: 3,
+      repeatFlag: 'RRULE:FREQ=WEEKLY', repeatFrom: 2, reminders: ['TRIGGER:PT0S'] });
+    m.tasks = [structuredClone(original)];
+    const result = await runRuleReplan({ scope });
+    expect(status(result, 'scene-date').status).toBe('success');
+    expect(m.tasks[0]).toEqual({ ...original, startDate: `${arrival}T14:30:00+0800`, dueDate: `${arrival}T15:30:00+0800` });
+    expect(m.write).toHaveBeenCalledOnce();
+    await runRuleReplan({ scope });
+    expect(m.write).toHaveBeenCalledOnce();
+  });
+  it('城市和场景共同匹配，当前同属居也不能保留异地长周期的过期日', async () => {
+    m.data.set('calendar-tags', { tagMap: { [day]: 'school', [arrival]: 'school' }, dayOverrides: { [day]: { city: GUANGZHOU } } });
+    m.tasks = [task('both', { tags: ['居', '北京', 'hidden'], repeatFlag: 'RRULE:FREQ=WEEKLY' }),
+      task('no-match', { tags: ['寄', '北京', 'hidden'] }), task('either', { tags: ['广州', '北京', 'routine'] })];
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks[0].dueDate).toBe(`${arrival}T00:00:00+0800`);
+    expect(m.tasks[1].dueDate).toBe(`${day}T00:00:00+0800`);
+    expect(m.tasks[2].dueDate).toBe(`${day}T00:00:00+0800`);
+  });
+  it('未来正确日期、已完成、当天放弃和未知重复规则保留，独立显隐不改日期', async () => {
+    m.tasks = [task('future', { tags: ['北京', 'hidden'], dueDate: '2027-02-13T00:00:00+0800' }),
+      task('done', { tags: ['北京'], status: 2, completedTime: `${day}T10:00:00+0800` }),
+      task('abandoned', { tags: ['北京', 'hidden'] }),
+      task('unknown', { tags: ['北京', 'hidden'], repeatFlag: 'unsupported' }),
+      task('overdue', { tags: ['北京', 'hidden'] })];
+    m.abandoned = [task('abandoned', { status: -1, completedTime: `${day}T10:00:00+0800` })];
+    const dates = m.tasks.map(t => t.dueDate);
+    await runRuleReplan({ scope: 'visibility' });
+    expect(m.tasks.map(t => t.dueDate)).toEqual(dates);
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks.slice(0, 4).map(t => t.dueDate)).toEqual(dates.slice(0, 4));
+    expect(m.tasks[4].dueDate).toBe(`${arrival}T00:00:00+0800`);
+  });
+  it('城市读取失败或没有明确的未来地点时保留原日期', async () => {
+    m.tasks = [task('beijing', { tags: ['北京', 'hidden'] })];
+    m.locationFailure = true;
+    const result = await runRuleReplan({ scope: 'hourly' });
+    expect(status(result, 'scene-date').status).toBe('failed');
+    expect(m.write).not.toHaveBeenCalled();
+    m.locationFailure = false;
+    m.data.set('calendar-tags', { tagMap: { [day]: 'home', [arrival]: 'travel' } });
+    await runRuleReplan({ scope: 'hourly' });
+    expect(m.tasks[0].dueDate).toBe(`${day}T00:00:00+0800`);
   });
 });
 
