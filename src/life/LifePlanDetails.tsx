@@ -23,9 +23,9 @@ export default function LifePlanDetails({ plan }: { plan: TickTickPlanDetails })
           <div className="life-plan-time"><dt>可排期时间</dt><dd>{minuteText(b.windowMinutes)}</dd></div>
         </dl>
         <details className="life-plan-collapsible">
-          <summary><span>Outlook 日程 · 共 {b.calendarEvents?.length ?? 0} 项 · 约 {minuteText(b.occupiedMinutes)}</span></summary>
+          <summary><span>Outlook 日程 · 共 {b.calendarEvents?.length ?? 0} 项 · 占用可排期时间 {minuteText(b.occupiedMinutes)}</span></summary>
           {b.calendarEvents?.length ? <ul className="life-plan-tasks">{b.calendarEvents.map((event, index) => <li key={`${event.start}:${event.title}:${index}`}>
-            <div><span>{event.title || '未命名日程'}</span><span>{minuteText(event.overlapMinutes)}</span></div>
+            <div><span>{event.title || '未命名日程'}</span><span>{minuteText((Date.parse(event.end) - Date.parse(event.start)) / 60_000)}</span></div>
             <p>{time.format(new Date(event.start))}—{time.format(new Date(event.end))}</p>
           </li>)}</ul> : <p className="life-plan-meta">暂无 Outlook 日程。</p>}
         </details>

@@ -12,6 +12,18 @@ const state = (): DailyPlanState => ({ connectionId: 'test', history: [], deadli
 const shown = (s: DailyPlanState) => renderToStaticMarkup(createElement(LifePlanDetails, { plan: s.briefing! }));
 
 describe('后台排期与页面共用预算', () => {
+  it.each([['22:00', 0], ['21:45', 15]])('日程从 %s 开始时，页面区分完整时长和排期占用', (start, occupiedMinutes) => {
+    const s = state();
+    const end = start === '22:00' ? '22:30' : '22:15';
+    planTickTickDay({ state: s, today, now: new Date(`${today}T20:00:00+08:00`), calendarState: {}, tasks: [],
+      availability: { startDate: today, endDate: '2026-11-12', events: [
+        { title: '洗头', start: `${today}T${start}:00+08:00`, end: `${today}T${end}:00+08:00` },
+      ] } });
+    const html = shown(s);
+    expect(html).toContain('<span>洗头</span><span>30 分钟</span>');
+    expect(html).toContain(`Outlook 日程 · 共 1 项 · 占用可排期时间 ${occupiedMinutes} 分钟`);
+    expect(html).toContain(`<dt>扣除日程后剩余</dt><dd>${120 - occupiedMinutes} 分钟</dd>`);
+  });
   it.each([[91, 0, 0], [61, 30, 1], [120, 0, 0]])('空闲91分钟、重要事项%i分钟，新增额度为%i分钟', (important, capacity, count) => {
     const s = state();
     const result = planTickTickDay({ state: s, today, now: new Date(`${today}T15:28:01+08:00`),
