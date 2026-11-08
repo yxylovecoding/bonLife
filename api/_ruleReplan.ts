@@ -75,6 +75,11 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       }
       const token = decryptTickTickToken(connection.encryptedToken, secret);
       const connectionId = createHash('sha256').update(token).digest('hex');
+      const trainingRevealKey = `ticktick:training-visible-day:v1:${connectionId}`;
+      const firstTrainingRun = options.scope === 'full' && !options.specialty && !sleepWindow(now).hidden
+        && await kv.get<string>(trainingRevealKey) !== today;
+      let trainingDates = new Map<string, string>();
+      let trainingRevealIds: string[] | undefined;
       const api = new TickTickOpenApiClient(token, (process.env.TICKTICK_API_BASE_URL || '').trim() || undefined);
       const [tasks, configState, storedCalendar, tripState, storedTrips, settings, saved] = await Promise.all([
         schedulingStage('tasks-read', true, () => readAllTickTickTasks(api, options.scope === 'visibility' ? [0] : [0, 2])), kv.get('app-config'), kv.get('calendar-tags'), kv.get('trip-tags'),
@@ -323,6 +328,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           const result = await syncExerciseSchedule(branch.api, { connectionId, tasks: draft.values(), calendarState, excludedTaskIds: excluded, rolling: id === 'exercise', rollingOnly: id === 'exercise', now, deferState: save => draft.saveAfterCommit(id, save),
             acceptsDate: (taskId, date) => routineTaskDate(draft.committedValues().find(t => t.id === taskId)!) === date });
           branch.claimDates(result.managedTaskIds);
+          if (id === 'exercise') trainingDates = result.fixedDates;
         });
         plan('swimming', async branch => {
           if (periodError) throw new Error('经期来源暂不可用');
@@ -338,6 +344,17 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       }
       for (const id of config.removed ?? []) delete handlers[id];
       const run = await executeRuleGraph(config, options.scope, handlers, { save: false, afterRule: async (id, success) => {
+        if (id === 'exercise' && success && handlers[id] && firstTrainingRun) {
+          const completedToday = matchCompletedOccurrences(tasks, state.history.filter(t => t.status === 2
+            && calendarDateInTimeZone(t.completedTime, 'Asia/Shanghai') === today));
+          trainingRevealIds = draft.values().filter(task => trainingDates.get(task.id) === today
+            && routineTaskDate(task) === today && pending(task) && !excluded.has(task.id)
+            && !abandonedToday.has(task.id) && !completedToday(task)).map(task => task.id);
+          draft.revealPlannedTraining(trainingRevealIds);
+          for (const taskId of trainingRevealIds) {
+            visibilityOwners[taskId] = 'exercise'; visibilityDecisions.set(taskId, false);
+          }
+        }
         if (success || !handlers[id]) return;
         // A failed higher rule still owns its applicable field. Lower proposals
         // cannot silently stand in for an unavailable result.
@@ -490,6 +507,19 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         await kv.set(RULE_RUN_KEY, run); hasRunTrace = true; throw error;
       }
       for (const result of run.results) result.updated += draft.writeCounts.get(result.id) ?? 0;
+      if (trainingRevealIds && allowed('exercise')) {
+        const confirmed = new Map(draft.committedValues().map(task => [task.id, task]));
+        if (trainingRevealIds.every(id => {
+          const task = confirmed.get(id);
+          return task && pending(task) && routineTaskDate(task) === today && !hasHiddenTag(task) && draft.datesConfirmed(id);
+        })) {
+          for (const id of trainingRevealIds) {
+            delete previousOwned[id]; delete journal[id];
+            if (nextBudgetHidden) delete nextBudgetHidden[id];
+          }
+          await kv.set(trainingRevealKey, today);
+        }
+      }
       // A compact, content-free confirmation for formerly skipped reopened tasks.
       // Report only changed dates that the shared writer has read back successfully.
       if (allowed('always-today')) {

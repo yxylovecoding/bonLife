@@ -10,11 +10,12 @@ export async function inspectTickTickVisibility(tasks: TickTickTask[], options: 
   connectionId: string; projectId: string; today: string; calendarState: unknown; timeZone?: string; now?: Date;
 }) {
   if (!tasks.length) return [];
-  const [input, config, owned, budget, lastRun] = await Promise.all([
+  const [input, config, owned, budget, lastRun, trainingShownDate] = await Promise.all([
     visibilityInputs(options.projectId, options.today, options.calendarState), readSchedulingRules(),
     kv.get<Record<string, SchedulingRuleId>>(`ticktick:visibility-owned:v1:${options.connectionId}`),
     kv.get<Record<string, string>>(`ticktick:budget-hidden:v1:${options.connectionId}`),
     kv.get<SchedulingRun>(RULE_RUN_KEY),
+    kv.get<string>(`ticktick:training-visible-day:v1:${options.connectionId}`),
   ]);
   const now = options.now ?? new Date();
   return tasks.map(task => {
@@ -23,6 +24,7 @@ export async function inspectTickTickVisibility(tasks: TickTickTask[], options: 
         ...input, now, timeZone: options.timeZone || 'Asia/Shanghai',
       }) : null })).filter(item => item.hidden !== null);
     return { hidden: hasHiddenTag(task), priority: task.priority,
+      trainingShownDate: typeof trainingShownDate === 'string' ? trainingShownDate : null,
       locationSourceAvailable: Boolean(input.locations), decisions,
       recordedOwner: owned?.[task.id] ?? null, budgetHiddenDate: budget?.[task.id] ?? null,
       sleepRecord: input.journal[task.id] ?? null,

@@ -87,6 +87,17 @@ export class RuleTaskDraft {
   committedValues() { return [...this.committed.values()].map(t => structuredClone(t)); }
   values() { return [...this.tasks.values()].map(t => structuredClone(t)); }
   saveAfterCommit(rule: SchedulingRuleId, save: () => Promise<unknown>) { this.pendingSaves.push({ rule, save }); }
+  // Explicit daily training visibility takes precedence for these planned tasks.
+  // The ordinary commit path still verifies concurrency and every saved field.
+  revealPlannedTraining(taskIds: Iterable<string>) {
+    for (const id of taskIds) {
+      const task = this.tasks.get(id);
+      if (!task || !pending(task) || this.protectedDateTaskIds.has(id)) continue;
+      task.tags = withHiddenTag(task.tags, false);
+      const owners = this.owners.get(id) ?? new Map<string, SchedulingRuleId>();
+      owners.set('hidden', 'exercise'); this.owners.set(id, owners);
+    }
+  }
   resolveIds<T>(value: T, publishedOnly = false): T {
     const replace = (item: unknown): unknown => typeof item === 'string' ? this.realIds.get(item) ?? (publishedOnly && item.startsWith('draft-') ? undefined : item)
       : Array.isArray(item) ? item.map(replace).filter(value => value !== undefined) : item && typeof item === 'object'

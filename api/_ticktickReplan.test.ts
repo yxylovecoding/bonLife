@@ -86,6 +86,63 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
+describe('每天首次 Orche 显示 BonLog 今日训练', () => {
+  const key = `ticktick:training-visible-day:v1:${hash}`;
+  const workout = (id: string, extra: Partial<TickTickTask> = {}) => task(id, { title: '燃脂操-运动💪🏻是生活的第一个锚点🪝',
+    priority: 5, tags: ['hidden', 'bon-hidden', 'routine', '动', '当天'], repeatFlag: 'RRULE:FREQ=WEEKLY;BYDAY=SA', ...extra });
+  const planned = (dates = new Map([['training', day]])) => m.exercise.mockResolvedValue({ updated: 0,
+    managedTaskIds: new Set(dates.keys()), minimumDates: new Map(), fixedDates: dates });
+  it('首次仅去掉当天已安排训练的隐藏标签，保留其他字段；同日不重清，次日重新处理', async () => {
+    const original = workout('training');
+    m.tasks = [structuredClone(original), workout('future', { dueDate: '2026-11-05T00:00:00+0800' }), task('other', { tags: ['hidden'], priority: 5 })];
+    planned(new Map([['training', day], ['future', '2026-11-05']]));
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks[0]).toEqual({ ...original, tags: ['routine', '动', '当天'] });
+    expect(m.tasks[1].tags).toContain('hidden'); expect(m.tasks[2].tags).toContain('hidden');
+    expect(m.data.get(key)).toBe(day);
+    m.tasks[0].tags!.push('hidden'); m.write.mockClear();
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks[0].tags).toContain('hidden'); expect(m.write).not.toHaveBeenCalled();
+    vi.setSystemTime(new Date('2026-11-04T09:00:00+08:00'));
+    m.tasks[0].dueDate = '2026-11-04T00:00:00+0800'; planned(new Map([['training', '2026-11-04']]));
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks[0].tags).not.toContain('hidden'); expect(m.data.get(key)).toBe('2026-11-04');
+  });
+  it('改到今天与取消隐藏合并写入，并覆盖当次具体时刻隐藏', async () => {
+    m.tasks = [workout('training', { tags: ['hidden', '动'], isAllDay: false, startDate: '2026-11-04T22:00:00+0800', dueDate: '2026-11-04T22:00:00+0800' })];
+    m.exercise.mockImplementation(async (api, options) => {
+      if (options.rolling) await api.updateTask('training', { startDate: `${day}T22:00:00+0800`, dueDate: `${day}T22:00:00+0800` });
+      return { updated: 0, managedTaskIds: new Set(['training']), minimumDates: new Map(), fixedDates: new Map([['training', day]]) };
+    });
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks[0].tags).toEqual(['动']); expect(m.write).toHaveBeenCalledOnce(); expect(m.data.get(key)).toBe(day);
+  });
+  it.each(['hourly', 'visibility', 'midnight'] as const)('%s 不消耗当天首次训练显示', async mode => {
+    m.tasks = [workout('training')]; planned();
+    if (mode === 'midnight') vi.setSystemTime(new Date(`${day}T00:10:00+08:00`));
+    await runRuleReplan({ scope: mode === 'midnight' ? 'full' : mode });
+    expect(m.tasks[0].tags).toContain('hidden'); expect(m.data.has(key)).toBe(false);
+  });
+  it('当天完成和放弃的系列不取消隐藏', async () => {
+    m.tasks = [workout('training'), workout('abandoned', { title: '全身力训-运动💪🏻是生活的第一个锚点🪝' })];
+    m.history = [{ ...m.tasks[0], status: 2, completedTime: `${day}T08:00:00+08:00` }];
+    m.abandoned = [{ ...m.tasks[1], status: -1, completedTime: `${day}T08:00:00+08:00` }];
+    planned(new Map(m.tasks.map(t => [t.id, day])));
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks.every(t => t.tags?.includes('hidden'))).toBe(true);
+  });
+  it('训练读取失败或标签写入未确认时不记录成功，修复后可继续首次处理', async () => {
+    m.tasks = [workout('training')]; m.exercise.mockRejectedValue(new Error('training unavailable'));
+    await runRuleReplan({ scope: 'full' }); expect(m.data.has(key)).toBe(false);
+    planned(); m.write.mockResolvedValue(undefined);
+    const failed = await runRuleReplan({ scope: 'full' });
+    expect(status(failed, 'exercise').status).toBe('failed'); expect(m.data.has(key)).toBe(false);
+    m.write.mockImplementation(async (id, payload) => { Object.assign(m.tasks.find(t => t.id === id)!, payload); return structuredClone(m.tasks.find(t => t.id === id)!); });
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks[0].tags).not.toContain('hidden'); expect(m.data.get(key)).toBe(day);
+  });
+});
+
 describe('统一显隐裁决', () => {
   it.each(['full', 'hourly', 'visibility'] as const)('%s 使用 hidden，兼容清理旧标签且未变化不重写', async scope => {
     config(['visibility-location', 'visibility-reading']);
