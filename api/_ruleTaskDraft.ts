@@ -72,6 +72,7 @@ export class RuleTaskDraft {
   private original: Map<string, TickTickTask>;
   private tasks: Map<string, TickTickTask>;
   private owners = new Map<string, Map<string, SchedulingRuleId>>();
+  private requiredRules = new Map<string, Set<SchedulingRuleId>>();
   private pendingSaves: { rule: SchedulingRuleId; save: () => Promise<unknown> }[] = [];
   readonly writeCounts = new Map<SchedulingRuleId, number>();
   private created = new Set<string>();
@@ -86,6 +87,13 @@ export class RuleTaskDraft {
   }
   committedValues() { return [...this.committed.values()].map(t => structuredClone(t)); }
   values() { return [...this.tasks.values()].map(t => structuredClone(t)); }
+  dateOwner(taskId: string) { return this.owners.get(taskId)?.get('date'); }
+  requireRule(id: SchedulingRuleId, taskIds: Iterable<string>) {
+    for (const taskId of taskIds) {
+      const rules = this.requiredRules.get(taskId) ?? new Set<SchedulingRuleId>();
+      rules.add(id); this.requiredRules.set(taskId, rules);
+    }
+  }
   saveAfterCommit(rule: SchedulingRuleId, save: () => Promise<unknown>) { this.pendingSaves.push({ rule, save }); }
   // Explicit daily training visibility takes precedence for these planned tasks.
   // The ordinary commit path still verifies concurrency and every saved field.
@@ -115,7 +123,7 @@ export class RuleTaskDraft {
     const proposed = this.tasks.get(taskId), saved = this.committed.get(this.realIds.get(taskId) ?? taskId);
     return Boolean(proposed && saved && ['startDate', 'dueDate', 'isAllDay', 'timeZone'].every(key => persistedField(key, proposed[key as keyof TickTickTask], saved[key as keyof TickTickTask])));
   }
-  branch(id: SchedulingRuleId) {
+  branch(id: SchedulingRuleId, refineDateOwners: ReadonlySet<SchedulingRuleId> = new Set()) {
     const base = new Map(this.values().map(t => [t.id, t]));
     const branch = new Map([...base].map(([key, t]) => [key, structuredClone(t)]));
     const claims = new Set<string>();
@@ -192,7 +200,11 @@ export class RuleTaskDraft {
             // Only a real alignment can be refined, never a failed rule's protected date.
             const alignedEyeDrop = id === 'eye-drops' && owner === 'always-today' && dateFields.has(key)
               && !this.datesConfirmed(taskId);
-            if (owner && owner !== id && !alignedEyeDrop) { conflicts.push({ taskId, winner: owner, field: group(key) }); continue; }
+            // A final constraint may refine a compatible date proposal. Keep its
+            // source rule as a write dependency, including on verification failure.
+            const refinement = owner && dateFields.has(key) && refineDateOwners.has(owner);
+            if (owner && owner !== id && !alignedEyeDrop && !refinement) { conflicts.push({ taskId, winner: owner, field: group(key) }); continue; }
+            if (refinement) this.requireRule(owner!, [taskId]);
             Object.assign(next, { [key]: task[key] }); owners.set(ruleGroup(id, key), id);
           }
           if (claims.has(taskId) && !this.protectedDateTaskIds.has(taskId) && !owners.has('date')) owners.set('date', id);
@@ -218,7 +230,7 @@ export class RuleTaskDraft {
   }) {
     const changed = this.values().filter(task => !this.created.has(task.id) && fields.some(k => !same(task[k], this.original.get(task.id)?.[k])));
     const allowed = (id: SchedulingRuleId | undefined) => !id || !options || options.allowed(id);
-    const ownerIds = (id: string) => [...new Set(this.owners.get(id)?.values() ?? [])];
+    const ownerIds = (id: string) => [...new Set([...this.owners.get(id)?.values() ?? [], ...this.requiredRules.get(id) ?? []])];
     const validState = (fresh: TickTickTask, original: TickTickTask) => pending(fresh) && pending(original) && !hasNewTaskCompletion(fresh, original)
       || !pending(original) && same(fresh.status, original.status) && same(fresh.completedTime, original.completedTime)
         && ownerIds(original.id).every(id => id === 'template-content' || id === 'moving-date');
@@ -241,6 +253,9 @@ export class RuleTaskDraft {
       if (!original) return result;
       const owners = this.owners.get(task.id);
       for (const key of fields) if (!allowed(owners?.get(group(key)))) Object.assign(result, { [key]: original[key] });
+      if ([...this.requiredRules.get(task.id) ?? []].some(rule => !allowed(rule))) {
+        for (const key of [...dateFields, 'content', 'desc']) Object.assign(result, { [key]: original[key as keyof TickTickTask] });
+      }
       if (owners?.has('template-items') && allowed(owners.get('template-items')) && !allowed(owners.get('date'))) {
         result.items = task.items?.map(item => {
           const old = original.items?.find(candidate => candidate.id === item.id);

@@ -211,6 +211,74 @@ describe('城市待办日期', () => {
     m.data.set('app-config', { config: { schoolCity: BEIJING, homeCity: GUANGZHOU } });
     m.data.set('calendar-tags', { tagMap: { [day]: 'home', '2027-02-11': 'home', [arrival]: 'school', '2027-02-13': 'school' } });
   });
+  it.each(['full', 'hourly'] as const)('%s 喷雾地点与错日共同满足，不锁住逾期日，重复运行不漂移', async scope => {
+    m.tasks = [task('fragrance', { title: '香香喷雾', tags: ['北京', '居', '寄', 'hidden'],
+      repeatFlag: 'RRULE:FREQ=WEEKLY', repeatFrom: '1', startDate: '2026-11-01T08:00:00+0800',
+      dueDate: '2026-11-01T08:01:00+0800', isAllDay: false, reminders: ['TRIGGER:PT0S'] }),
+      task('mite', { title: '除螨喷雾', tags: ['北京', '居', 'hidden'], repeatFlag: 'RRULE:FREQ=WEEKLY' })];
+    m.history = [{ ...m.tasks[0], status: 2, completedTime: '2026-10-01T08:00:00+0800' },
+      { ...m.tasks[1], status: 2, completedTime: '2026-10-02T08:00:00+0800' }];
+    const result = await runRuleReplan({ scope });
+    expect(status(result, 'sprays')).toMatchObject({ status: 'success', conflicts: [] });
+    expect(m.tasks[0]).toMatchObject({ startDate: `${arrival}T08:00:00+0800`, dueDate: `${arrival}T08:01:00+0800`,
+      repeatFlag: 'RRULE:FREQ=WEEKLY', repeatFrom: '1', reminders: ['TRIGGER:PT0S'] });
+    expect(m.tasks[1].dueDate).toBe('2027-02-13T00:00:00+0800');
+    expect(m.tasks[0].tags).toEqual(['北京', '居', '寄', 'hidden']);
+    expect(m.write).toHaveBeenCalledTimes(2);
+    await runRuleReplan({ scope }); expect(m.write).toHaveBeenCalledTimes(2);
+  });
+  it.each([['sprays', 'scene-date'], ['scene-date', 'sprays']] as SchedulingRuleId[][])('交换 %s / %s 顺序不改变兼容约束', async (first, second) => {
+    config([first, second]);
+    m.tasks = [task('fragrance', { title: '香香喷雾', tags: ['北京', '居', 'hidden'], repeatFlag: 'RRULE:FREQ=WEEKLY' })];
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks[0].dueDate).toBe(`${arrival}T00:00:00+0800`);
+  });
+  it('返京次日地点不符时继续找共同适用日，不能仅加一天', async () => {
+    m.data.set('calendar-tags', { tagMap: { [day]: 'home', [arrival]: 'school', '2027-02-13': 'home', '2027-02-14': 'school' } });
+    m.tasks = [task('a', { title: '香香喷雾', tags: ['北京', '居', 'hidden'] }), task('b', { title: '除螨喷雾', tags: ['北京', '居', 'hidden'] })];
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks.map(t => t.dueDate)).toEqual([`${arrival}T00:00:00+0800`, '2027-02-14T00:00:00+0800']);
+  });
+  it('当天放弃与未知重复不被错日覆盖，其他喷雾避开其日期', async () => {
+    m.tasks = [task('a', { title: '香香喷雾', tags: ['北京', '居', 'hidden'], dueDate: `${arrival}T00:00:00+0800` }),
+      task('b', { title: '除螨喷雾', tags: ['北京', '居', 'hidden'], repeatFlag: 'unsupported', dueDate: `${arrival}T00:00:00+0800` })];
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks.map(t => t.dueDate)).toEqual(['2027-02-13T00:00:00+0800', `${arrival}T00:00:00+0800`]);
+    m.tasks[1].repeatFlag = 'RRULE:FREQ=WEEKLY';
+    m.abandoned = [{ ...m.tasks[1], status: -1, completedTime: `${day}T08:00:00+0800` }];
+    m.write.mockClear(); await runRuleReplan({ scope: 'full' }); expect(m.write).not.toHaveBeenCalled();
+  });
+  it('喷雾错开后的未来时刻会重新隐藏', async () => {
+    m.city = '北京';
+    m.data.set('calendar-tags', { tagMap: { [day]: 'school', '2026-11-04': 'school' } });
+    m.tasks = [task('a', { title: '香香喷雾', tags: ['居', 'routine'], isAllDay: false, startDate: `${day}T20:00:00+0800`, dueDate: `${day}T20:01:00+0800` }),
+      task('b', { title: '除螨喷雾', tags: ['居', 'routine'], isAllDay: false, startDate: `${day}T20:00:00+0800`, dueDate: `${day}T20:01:00+0800` })];
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'sprays').status).toBe('success');
+    expect(m.tasks[1]).toMatchObject({ startDate: '2026-11-04T20:00:00+0800', dueDate: '2026-11-04T20:01:00+0800', tags: ['居', 'routine', 'hidden'] });
+  });
+  it('实际完成占用当天；写后未确认时标记喷雾规则失败', async () => {
+    m.city = '北京';
+    m.data.set('calendar-tags', { tagMap: { [day]: 'school', '2026-11-04': 'school' } });
+    m.tasks = [task('a', { title: '香香喷雾', tags: ['北京', '居', 'routine'], repeatFlag: 'RRULE:FREQ=WEEKLY' })];
+    m.history = [task('done-mite', { title: '除螨喷雾', status: 2, completedTime: `${day}T08:00:00+0800` })];
+    m.write.mockResolvedValue(undefined);
+    const failed = await runRuleReplan({ scope: 'full' });
+    expect(status(failed, 'sprays').status).toBe('failed');
+    expect(m.tasks[0].dueDate).toBe(`${day}T00:00:00+0800`);
+    m.write.mockImplementation(async (id, payload) => { Object.assign(m.tasks.find(t => t.id === id)!, payload); return structuredClone(m.tasks.find(t => t.id === id)!); });
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'sprays').status).toBe('success');
+    expect(m.tasks[0].dueDate).toBe('2026-11-04T00:00:00+0800');
+  });
+  it('无共同可用日期或地点读取失败时不提交部分喷雾改期', async () => {
+    m.data.set('calendar-tags', { tagMap: { [day]: 'home', [arrival]: 'school' } });
+    m.tasks = [task('a', { title: '香香喷雾', tags: ['北京', '居', 'hidden'] }), task('b', { title: '除螨喷雾', tags: ['北京', '居', 'hidden'] })];
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'sprays').status).toBe('failed'); expect(m.write).not.toHaveBeenCalled();
+    m.locationFailure = true;
+    await runRuleReplan({ scope: 'full' }); expect(m.write).not.toHaveBeenCalled();
+  });
   it.each(['full', 'hourly'] as const)('%s 将已隐藏的过期北京待办跨年顺延并保持重复、提醒和时刻，重试幂等', async scope => {
     const original = task('beijing', { tags: ['hidden', '北京市', '玩'], dueDate: '2026-11-01T15:30:00+0800',
       startDate: '2026-11-01T14:30:00+0800', isAllDay: false, priority: 3,

@@ -748,8 +748,10 @@ export function separateTickTickSprays(options: {
   tasks: TickTickTask[]; dates: Map<string, string>; history: TickTickTask[];
   calendarState: unknown; today: string; now?: Date; excludedTaskIds?: ReadonlySet<string>;
   movableTaskIds?: ReadonlySet<string>;
+  nextEligibleDate?: (task: TickTickTask, from: string) => string | null;
 }): Map<string, string> {
   const { tasks, dates, history, calendarState, today, excludedTaskIds = new Set<string>() } = options;
+  const nextDate = options.nextEligibleDate ?? ((task: TickTickTask, from: string) => nextRoutineSceneDate(task, calendarState, from));
   const byId = new Map(tasks.map(task => [task.id, task]));
   const excluded = (task: TickTickTask) => {
     if ((task.tags ?? []).some(tag => tag.normalize('NFKC').trim() === '不关我事')) return true;
@@ -761,7 +763,7 @@ export function separateTickTickSprays(options: {
     }
     return false;
   };
-  const open = tasks.filter(task => (task.status ?? 0) === 0 && !task.completedTime && sprayKind(task) && !excluded(task));
+  const open = tasks.filter(task => isPendingTickTickTask(task) && sprayKind(task) && !excluded(task));
   const completed = history.filter(task => sprayKind(task) && !excluded(task) && (task.status ?? 2) === 2
     && task.completedTime && Number.isFinite(Date.parse(task.completedTime))
     && Date.parse(task.completedTime) <= (options.now?.getTime() ?? Date.now()));
@@ -785,17 +787,22 @@ export function separateTickTickSprays(options: {
   for (const task of open) {
     if (!isAlwaysTodayTask(task) && (!options.movableTaskIds || options.movableTaskIds.has(task.id))) continue;
     const day = dates.get(task.id) ?? routineTaskDate(task);
-    if (day) reserve(day < today ? today : day, sprayKind(task)!);
+    if (day) {
+      const effective = day < today ? today : day;
+      if (options.nextEligibleDate && conflict(effective, sprayKind(task)!)) throw new Error('喷雾固定日期冲突，保留原安排');
+      reserve(effective, sprayKind(task)!);
+    }
   }
   for (const task of open) {
     if (isAlwaysTodayTask(task) || (options.movableTaskIds && !options.movableTaskIds.has(task.id))) continue;
     const original = dates.get(task.id) ?? routineTaskDate(task);
     if (!original) continue;
     const kind = sprayKind(task)!, effective = original < today ? today : original;
-    let target = effective;
+    let target = options.nextEligibleDate ? nextDate(task, effective) : effective;
+    if (!target) throw new Error('喷雾需要后续适用场景日才能错开，未更新本轮安排');
     for (let attempt = 0; conflict(target, kind); attempt++) {
       if (attempt >= 730) throw new Error('喷雾暂时找不到可错开的日期，未更新本轮安排');
-      const next = nextRoutineSceneDate(task, calendarState, addCalendarDays(target, 1));
+      const next = nextDate(task, addCalendarDays(target, 1));
       if (!next) throw new Error('喷雾需要后续适用场景日才能错开，未更新本轮安排');
       target = next;
     }

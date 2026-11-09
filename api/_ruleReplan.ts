@@ -33,7 +33,7 @@ import { OUTLOOK_WRITE_KEY } from './_outlookWrite.js';
 import { TickTickOpenApiClient, decryptTickTickToken, readAllTickTickTasks, readConnectedTickTickTemplate,
   syncTickTickAlwaysToday, isAlwaysTodayTask, isPastEyeDrop, routineTaskDate, routineTaskPayload, routineScenes, routineRecurrence, followsHairWash,
   calendarDateInTimeZone, matchCompletedOccurrences,
-  nextRoutineSceneDate, separateTickTickSprays, buildTripSourcesFromSyncState, reconcileTickTickTrips, reconcileTickTickWishPreparations,
+  nextRoutineSceneDate, separateTickTickSprays, sprayKind, buildTripSourcesFromSyncState, reconcileTickTickTrips, reconcileTickTickWishPreparations,
   getTickTickRoutineExcludedTaskIds, getTickTickRoutineTargetDates, type TickTickTask, type TickTickTemplate, type TickTickConnection, type TickTickTripSyncState } from './_ticktickTrips.js';
 
 import { isPendingTickTickTask as pending } from './_ticktickTaskState.js';
@@ -238,6 +238,9 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         });
       }
       if (options.scope !== 'visibility' && !sleeping) {
+        // Spray separation constrains the final dates; it does not reserve an
+        // unchanged date ahead of location, recurrence or ordinary rotation.
+        plan('sprays', async () => {});
         plan('scene-date', async branch => {
           const tagMap = (calendarState as { tagMap?: Record<string, string> }).tagMap ?? {};
           const values = draft.values();
@@ -293,12 +296,6 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             if (target) await branch.api.updateTask(task.id, routineTaskPayload(task, target));
           }
           branch.claimDates(followers.map(t => t.id));
-        });
-        plan('sprays', async branch => {
-          const values = draft.values(), dates = new Map<string, string>();
-          const resolved = separateTickTickSprays({ tasks: values, dates, history: state.history, calendarState, today, excludedTaskIds: excluded, now });
-          for (const [id, date] of dates) await branch.api.updateTask(id, routineTaskPayload(values.find(t => t.id === id)!, date));
-          branch.claimDates(resolved.keys());
         });
         for (const [id, mode] of [['laundry-appointment', 'appointment'], ['laundry-travel', 'travel'], ['laundry', 'weather']] as const) plan(id, async branch => {
           const result = await syncLaundrySchedule(branch.api, { connectionId, tasks: draft.values(), history: state.history, calendarState,
@@ -400,6 +397,44 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         try { await withActiveRule('hair-follow', handlers['hair-follow']!); }
         catch { const result = run.results.find(r => r.id === 'hair-follow')!; result.status = 'failed'; result.reason = '洗头来源日期未确认'; }
       }
+      const propagate = () => {
+        for (const id of config.order) {
+          const result = run.results.find(r => r.id === id)!;
+          if ((config.predecessors[id] ?? []).some(parent => run.results.find(r => r.id === parent)?.status !== 'success') && result.status === 'success') {
+            result.status = 'skipped'; result.reason = '前序执行或写入未完成';
+          }
+        }
+      };
+      const allowed = (id: SchedulingRuleId) => run.results.find(r => r.id === id)?.status === 'success';
+      propagate();
+      const sprayResult = run.results.find(r => r.id === 'sprays');
+      if (sprayResult && handlers.sprays && !config.removed?.includes('sprays')) {
+        const values = draft.values(), sprays = values.filter(t => pending(t) && sprayKind(t) && !excluded.has(t.id));
+        draft.requireRule('sprays', sprays.map(t => t.id));
+        if (sprays.length && allowed('sprays')) {
+          // These rules specify an eligible date/lower bound, not an exact-day
+          // appointment. A later eligible spray day satisfies both constraints.
+          const flexible = new Set<SchedulingRuleId>(['scene-date', 'repeat-date', 'daily-plan'].filter(id => allowed(id as SchedulingRuleId)) as SchedulingRuleId[]);
+          const branch = draft.branch('sprays', flexible);
+          try {
+            if (!visibility.locations) throw new Error('地点读取失败，保留当前排期');
+            const movable = new Set(sprays.filter(t => !abandonedToday.has(t.id)
+              && !(t.tags ?? []).includes('always-today') && routineRecurrence(t.repeatFlag) !== 'unknown'
+              && (!draft.dateOwner(t.id) || flexible.has(draft.dateOwner(t.id)!))).map(t => t.id));
+            const dates = new Map<string, string>();
+            const resolved = separateTickTickSprays({ tasks: values, dates, history: state.history, calendarState, today, now,
+              excludedTaskIds: excluded, movableTaskIds: movable,
+              nextEligibleDate: (task, from) => allowed('scene-date') || allowed('scene-eligibility')
+                ? nextTaskLocationDate(task, calendarState, from) : from });
+            for (const [id, date] of dates) await branch.api.updateTask(id, routineTaskPayload(values.find(t => t.id === id)!, date));
+            const changes = branch.accept();
+            Object.assign(sprayResult, changes, { matched: resolved.size });
+          } catch (error) {
+            branch.reject(); sprayResult.status = 'failed'; sprayResult.reason = schedulingRuleFailureReason(error);
+            propagate();
+          }
+        }
+      }
       for (const id of visibilityRules) if (run.results.find(r => r.id === id)?.status === 'success') {
         for (const taskId of Object.keys(visibilityOwners)) if (visibilityOwners[taskId] === id) delete visibilityOwners[taskId];
       }
@@ -417,16 +452,6 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       }
       // Persist ownership before mutation so an interrupted tag write is recoverable.
       if (!options.specialty) await kv.set(sleepTagStateKey(connection.projectId), journal);
-      const propagate = () => {
-        for (const id of config.order) {
-          const result = run.results.find(r => r.id === id)!;
-          if ((config.predecessors[id] ?? []).some(parent => run.results.find(r => r.id === parent)?.status !== 'success') && result.status === 'success') {
-            result.status = 'skipped'; result.reason = '前序执行或写入未完成';
-          }
-        }
-      };
-      const allowed = (id: SchedulingRuleId) => run.results.find(r => r.id === id)?.status === 'success';
-      propagate();
       // Check both dates: the rotation can defer an existing today task, while a
       // subsequent scene rule can bring an unselected backlog task into today.
       let nextBudgetHidden: Record<string, string> | undefined;
