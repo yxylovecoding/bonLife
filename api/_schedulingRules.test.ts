@@ -81,10 +81,74 @@ const task = (fields: Partial<TickTickTask> = {}): TickTickTask => ({ id: 'one',
 function client(original = task()) {
   const tasks = new Map([[original.id, original]]);
   const api = { getTask: vi.fn(async (_project: string, id: string) => structuredClone(tasks.get(id)!)),
+    getProjectData: vi.fn(async (projectId: string) => ({ tasks: [...tasks.values()].filter(t => t.projectId === projectId && t.status === 0) })),
     updateTask: vi.fn(async (id: string, payload: Record<string, unknown>) => { tasks.set(id, { ...tasks.get(id)!, ...payload } as TickTickTask); return tasks.get(id)!; }) };
   return { api: api as unknown as TickTickApi, tasks, write: api.updateTask };
 }
 describe('最终任务改动裁决', () => {
+  it('按 ID 补读的既有任务加入同一快照，更新保留原 ID 并经过写前及写后核验', async () => {
+    const c = client(), draft = new RuleTaskDraft(c.api, []);
+    const branch = draft.branch('trips');
+    await branch.api.getTask('p', 'one');
+    await branch.api.updateTask('one', { title: '行程 · 更新后任务' });
+    branch.accept();
+    expect(c.write).not.toHaveBeenCalled();
+    await expect(draft.commit()).resolves.toBe(1);
+    expect(c.write).toHaveBeenCalledOnce();
+    expect(c.tasks.get('one')).toEqual({ ...task(), title: '行程 · 更新后任务' });
+  });
+
+  it('补读任务后发生用户编辑仍停止写入，不能把详情读取当作绕过并发校验', async () => {
+    const c = client(), draft = new RuleTaskDraft(c.api, []);
+    const branch = draft.branch('trips');
+    await branch.api.getTask('p', 'one');
+    await branch.api.updateTask('one', { title: '行程 · 更新后任务' }); branch.accept();
+    c.tasks.get('one')!.title = '用户修改';
+    await expect(draft.commit()).rejects.toThrow('待办已变化');
+    expect(c.write).not.toHaveBeenCalled();
+  });
+
+  it('按 ID 仍返回的已删除待办不能被补读恢复', async () => {
+    const c = client(), draft = new RuleTaskDraft(c.api, []);
+    vi.spyOn(c.api, 'getProjectData').mockResolvedValue({ tasks: [] });
+    await expect(draft.branch('trips').api.getTask('p', 'one')).rejects.toThrow('不在当前清单');
+    await expect(draft.commit()).resolves.toBe(0); expect(c.write).not.toHaveBeenCalled();
+  });
+
+  it.each(['identity', 'removed', 'rejected'])('补读不会接纳错误身份、恢复前序移除或泄露失败分支修改：%s', async mode => {
+    const c = client(), draft = new RuleTaskDraft(c.api, mode === 'removed' ? [task()] : []);
+    if (mode === 'removed') {
+      const first = draft.branch('template-content'); await first.api.deleteTask('p', 'one'); first.accept();
+    }
+    const branch = draft.branch('trips');
+    if (mode === 'identity') {
+      c.tasks.get('one')!.projectId = 'other';
+      await expect(branch.api.getTask('p', 'one')).rejects.toThrow('身份未确认');
+      expect(draft.values()).toEqual([]);
+    } else if (mode === 'removed') {
+      await expect(branch.api.getTask('p', 'one')).rejects.toThrow('前序规则移除');
+      expect(draft.values()).toEqual([]);
+    } else {
+      await branch.api.getTask('p', 'one'); await branch.api.updateTask('one', { title: '失败候选' }); branch.reject();
+      await expect(draft.commit()).resolves.toBe(0); expect(draft.values()).toEqual([task()]);
+    }
+    expect(c.write).not.toHaveBeenCalled();
+  });
+
+  it.each(['stable', 'completed-again', 'reopened', 'abandoned'])('出行历史任务只在完成状态及完成时间未变时同步元数据：%s', async mode => {
+    const original = task({ status: mode === 'abandoned' ? -1 : 2, completedTime: '2026-09-04T01:30:51+0800' });
+    const c = client(original), draft = new RuleTaskDraft(c.api, []), branch = draft.branch('trips');
+    await branch.api.getTask('p', 'one'); await branch.api.updateTask('one', { title: '行程 · 更新后任务' }); branch.accept();
+    if (mode === 'completed-again') c.tasks.get('one')!.completedTime = '2026-11-10T08:00:00+0800';
+    if (mode === 'reopened') c.tasks.get('one')!.status = 0;
+    if (mode === 'stable') {
+      await expect(draft.commit()).resolves.toBe(1);
+      expect(c.tasks.get('one')).toEqual({ ...original, title: '行程 · 更新后任务' });
+    } else {
+      await expect(draft.commit()).rejects.toThrow('待办已变化'); expect(c.write).not.toHaveBeenCalled();
+    }
+  });
+
   it.each([false, true])('移动整组确实改变冲突胜者，后执行规则不覆盖且只写一次：%s', async reverse => {
     const c = client(), draft = new RuleTaskDraft(c.api, [task()]), initial = defaultRuleConfig();
     initial.predecessors = {};

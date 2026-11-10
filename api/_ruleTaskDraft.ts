@@ -134,7 +134,23 @@ export class RuleTaskDraft {
         const task = branch.get(taskId);
         if (task) return structuredClone(task);
         if (base.has(taskId)) throw new Error('TickTick 404');
-        return target.getTask(projectId, taskId);
+        if (this.removed.has(taskId)) throw new Error('待办已由前序规则移除');
+        const loaded = await target.getTask(projectId, taskId);
+        if (!loaded || loaded.id !== taskId || loaded.projectId !== projectId) throw new Error('补读待办身份未确认');
+        if (pending(loaded)) {
+          // TickTick may return soft-deleted records by ID. Only completed
+          // history may legitimately be absent from its current collection.
+          const current = await target.getProjectData(projectId);
+          if (!current?.tasks?.some(task => task.id === taskId && task.projectId === projectId))
+            throw new Error('补读待办不在当前清单，已保留原安排');
+        }
+        // Detail reads can recover historical tasks absent from the collection.
+        // They are existing records, not creations; retain their original state
+        // for the same concurrency and write verification as the initial snapshot.
+        base.set(taskId, structuredClone(loaded)); branch.set(taskId, structuredClone(loaded));
+        this.original.set(taskId, structuredClone(loaded)); this.tasks.set(taskId, structuredClone(loaded));
+        this.committed.set(taskId, structuredClone(loaded));
+        return structuredClone(loaded);
       };
       if (key === 'updateTask') return async (taskId: string, payload: Record<string, unknown>) => {
         const task = branch.get(taskId);
@@ -233,7 +249,8 @@ export class RuleTaskDraft {
     const ownerIds = (id: string) => [...new Set([...this.owners.get(id)?.values() ?? [], ...this.requiredRules.get(id) ?? []])];
     const validState = (fresh: TickTickTask, original: TickTickTask) => pending(fresh) && pending(original) && !hasNewTaskCompletion(fresh, original)
       || !pending(original) && same(fresh.status, original.status) && same(fresh.completedTime, original.completedTime)
-        && ownerIds(original.id).every(id => id === 'template-content' || id === 'moving-date');
+        && ownerIds(original.id).every(id => id === 'template-content' || id === 'moving-date'
+          || original.status === 2 && (id === 'trips' || id === 'wishes'));
     const verify = (fresh: TickTickTask | undefined, expected: TickTickTask, original: TickTickTask, phase: 'before' | 'after') => {
       const differences = !fresh ? ['task'] : [
         ...(!validState(fresh, original) ? ['status'] : []),

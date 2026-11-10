@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { RuleTaskDraft } from './_ruleTaskDraft';
 import { applyOutlookSnapshotToState, buildOutlookSnapshot, DEFAULT_OUTLOOK_RULES } from '../src/utils/outlookCalendar';
 import {
   buildTripSourcesFromSyncState,
@@ -1695,6 +1696,28 @@ describe('TickTick 清单状态续写', () => {
 });
 
 describe('TickTick 出游同步', () => {
+  it('已完成阶段从列表消失后按原 ID 补读，同步经过草稿仍保留进度且不重复创建', async () => {
+    const api = new FakeTickTickApi();
+    api.tasks.get('template-month')!.items = [{ id: 'booking', title: '订票', status: 0 }];
+    const template = await discoverTickTickTemplate(api), state: TickTickTripSyncState = { instances: {} };
+    const saveState = async () => undefined;
+    await reconcileTickTickTrips({ api, template, state, trips: [futureTrip], today: '2026-11-10', saveState });
+    const id = state.instances[futureTrip.key].taskIdsByTemplateId['template-month'];
+    const completed = api.tasks.get(id)!;
+    completed.status = 2; completed.completedTime = '2026-09-04T01:30:51+0800'; completed.items![0].status = 1;
+    const original = structuredClone(completed), ids = [...api.tasks.keys()];
+    const draft = new RuleTaskDraft(api, [...api.tasks.values()].filter(task => task.id !== id));
+    const branch = draft.branch('trips');
+    await reconcileTickTickTrips({ api: branch.api, template, state, sourceTasks: draft.values(),
+      trips: [{ ...futureTrip, name: '大阪' }], today: '2026-11-10', saveState });
+    branch.accept();
+    expect(api.tasks.get(id)).toEqual(original);
+    await draft.commit();
+    expect(api.tasks.get(id)).toMatchObject({ title: '大阪 · 出门前一个月', status: 2,
+      completedTime: original.completedTime, startDate: original.startDate, dueDate: original.dueDate, items: original.items });
+    expect([...api.tasks.keys()]).toEqual(ids); expect(api.createCalls).toBe(4);
+  });
+
   it.each([false, true])('旧版模板日期偏移迁移到名称排期，保留完成状态（有快照：%s）', async (snapshots) => {
     const api = new FakeTickTickApi();
     const template = await discoverTickTickTemplate(api);
