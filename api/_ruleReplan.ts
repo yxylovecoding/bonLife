@@ -196,6 +196,8 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       }
       if (options.scope !== 'visibility' || ['daily', 'all'].includes(options.visibilityKind ?? '')) {
         plan('always-today', async branch => {
+          if (!visibility.locations && draft.values().some(task => pending(task) && isAlwaysTodayTask(task) && taskCityTags(task, calendarState).length))
+            throw new Error('地点读取失败，保留当前排期');
           await syncTickTickAlwaysToday(branch.api, { tasks: draft.values(), today, calendarState, protectedTaskIds: abandonedToday });
           branch.claimDates(draft.values().filter(task => pending(task) && isAlwaysTodayTask(task) && !isEyeDrops(task)).map(t => t.id));
         });

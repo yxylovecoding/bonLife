@@ -9,6 +9,7 @@ import { Lunar } from 'lunar-typescript';
 import ICAL from 'ical.js';
 import { withoutDurationAnnotations } from './_taskDuration.js';
 import { getTripDisplayTitle, normalizeOutlookTravelTitles } from '../src/utils/outlookCalendar.js';
+import { nextTaskLocationDate } from './_ticktickLocation.js';
 
 export const TICKTICK_CONNECTION_KEY = 'ticktick:connection:v1';
 export const TICKTICK_SYNC_STATE_KEY = 'ticktick:trip-sync:v1';
@@ -934,8 +935,8 @@ export async function syncTickTickAlwaysToday(api: TickTickApi, options: { tasks
   const needsToday = (task: TickTickTask) => !isEyeDrops(task) || isPastEyeDrop(task, today) && canAdvanceEyeDrop(task);
   const candidates = tasks.filter(task => !options.protectedTaskIds?.has(task.id) && needsToday(task) && isAlwaysTodayTask(task) && isPendingTickTickTask(task));
   if (!candidates.length) return { matched: 0, updated: 0 };
-  const calendarState = options.calendarState ?? (candidates.some(task => routineScenes(task).length)
-    ? await readRoutineCalendarState() : undefined);
+  // City-only tasks also need the calendar, including its configured city names.
+  const calendarState = options.calendarState ?? await readRoutineCalendarState();
   // A repeating task can already be pending again with a new ID after completion.
   // Read today's actual completions before any writes; failed reads must not look empty.
   const completed = await schedulingStage('completion-history', true, async () => {
@@ -965,12 +966,13 @@ export async function syncTickTickAlwaysToday(api: TickTickApi, options: { tasks
     // A new recurring occurrence may have appeared after the history snapshot.
     // Leave concurrently advanced/edited dates for the next fresh read.
     if (task.repeatFlag && datesChanged) continue;
-    const sceneDate = nextRoutineSceneDate(task, calendarState, today);
-    if (!sceneDate) continue;
+    // Fixed-today is bounded by both city and 寄/居/旅, even when its rule runs first.
+    const locationDate = nextTaskLocationDate(task, calendarState, today);
+    if (!locationDate) continue;
     // The date writer expects a task-local day. A midnight Beijing slot may
     // still belong to the previous calendar day in the task's timezone.
     const eyeDay = isEyeDrops(task) ? eyeDropShanghaiDay(task) : null;
-    const target = eyeDay ? addCalendarDays(routineTaskDate(task)!, calendarDayDifference(sceneDate, eyeDay)) : sceneDate;
+    const target = eyeDay ? addCalendarDays(routineTaskDate(task)!, calendarDayDifference(locationDate, eyeDay)) : locationDate;
     const saved = await updateRoutineTaskDate(api, task, target, true, true);
     if (!saved) continue;
     if (!isPendingTickTickTask(saved) || hasNewTaskCompletion(saved, task) || saved.projectId !== task.projectId

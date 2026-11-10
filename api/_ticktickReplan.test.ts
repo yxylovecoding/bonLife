@@ -211,6 +211,33 @@ describe('城市待办日期', () => {
     m.data.set('app-config', { config: { schoolCity: BEIJING, homeCity: GUANGZHOU } });
     m.data.set('calendar-tags', { tagMap: { [day]: 'home', '2027-02-11': 'home', [arrival]: 'school', '2027-02-13': 'school' } });
   });
+  it.each(['full', 'hourly', 'visibility', 'midnight'] as const)('%s 固定今日先满足地点，排到二月且重复同步不拉回', async mode => {
+    if (mode === 'midnight') vi.setSystemTime(new Date(`${day}T00:01:00+08:00`));
+    m.data.set('calendar-tags', { tagMap: { [day]: 'school', [arrival]: 'school' }, dayOverrides: { [day]: { city: GUANGZHOU } } });
+    const original = task('bedtime', { title: '下班洗洗睡觉!', priority: 5, tags: ['always-today', '北京', '居', 'routine', 'hidden'],
+      startDate: `${day}T21:50:00+0800`, dueDate: `${day}T22:20:00+0800`, isAllDay: false,
+      repeatFlag: 'RRULE:FREQ=DAILY', repeatFrom: '1', reminders: ['TRIGGER:PT0S'] });
+    m.tasks = [structuredClone(original)];
+    const options = { scope: mode === 'midnight' ? 'hourly' as const : mode, visibilityKind: 'all' as const };
+    const result = await runRuleReplan(options);
+    expect(status(result, 'always-today').status).toBe('success');
+    expect(m.tasks[0]).toEqual({ ...original, startDate: `${arrival}T21:50:00+0800`, dueDate: `${arrival}T22:20:00+0800` });
+    expect(m.write).toHaveBeenCalledOnce();
+    await runRuleReplan(options); expect(m.write).toHaveBeenCalledOnce();
+  });
+  it.each([['always-today', 'scene-date'], ['scene-date', 'always-today']] as SchedulingRuleId[][])('%s / %s 的排序都不能绕过地点', async (first, second) => {
+    config([first, second]);
+    m.tasks = [task('bedtime', { tags: ['always-today', '北京', '居', 'hidden'], repeatFlag: 'RRULE:FREQ=DAILY' })];
+    await runRuleReplan({ scope: 'hourly' });
+    expect(m.tasks[0].dueDate).toBe(`${arrival}T00:00:00+0800`);
+  });
+  it('固定今日的城市来源失败时不改日期', async () => {
+    m.locationFailure = true;
+    m.tasks = [task('bedtime', { tags: ['always-today', '北京', '居', 'hidden'] })];
+    const result = await runRuleReplan({ scope: 'hourly' });
+    expect(status(result, 'always-today').status).toBe('failed');
+    expect(m.write).not.toHaveBeenCalled();
+  });
   it.each(['full', 'hourly'] as const)('%s 喷雾地点与错日共同满足，不锁住逾期日，重复运行不漂移', async scope => {
     m.tasks = [task('fragrance', { title: '香香喷雾', tags: ['北京', '居', '寄', 'hidden'],
       repeatFlag: 'RRULE:FREQ=WEEKLY', repeatFrom: '1', startDate: '2026-11-01T08:00:00+0800',

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { inspectTickTickTaskDate } from './_ticktickTaskStatus';
+import { BEIJING, GUANGZHOU } from '../src/utils/internship';
 import type { TickTickApi, TickTickTask } from './_ticktickTrips';
 
 vi.mock('@vercel/kv', () => ({ kv: { get: async () => null } }));
@@ -14,6 +15,16 @@ function fixture(completed: TickTickTask[] = [], abandoned: TickTickTask[] = [])
     listCompletedTasks: vi.fn(async () => completed), updateTask: vi.fn(), createTask: vi.fn(), deleteTask: vi.fn() };
 }
 describe('任务日期只读核对', () => {
+  it('固定今日目标同时核对城市和寄居旅，显示二月适用日期', async () => {
+    const located = { ...task, tags: ['always-today', '北京', '居'] };
+    const api = fixture();
+    api.filterTasks.mockImplementation(async (_ids, statuses) => statuses.includes(-1) ? [] : [located]);
+    api.getTask.mockResolvedValue(located);
+    const result = await inspectTickTickTaskDate(api as unknown as TickTickApi, task.title,
+      { tagMap: { '2026-11-08': 'intern', '2027-02-12': 'school' }, cityMap: { '2026-11-08': GUANGZHOU, '2027-02-12': BEIJING } }, now);
+    expect(result.tasks[0].nextSceneDate).toBe('2027-02-12');
+    expect(api.updateTask).not.toHaveBeenCalled();
+  });
   it('区分列表和详情日期，保留子任务身份，不泄露备注且不写入', async () => {
     const api = fixture();
     const result = await inspectTickTickTaskDate(api as unknown as TickTickApi, 'transformer', {}, now);

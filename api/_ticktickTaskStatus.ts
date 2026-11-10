@@ -1,6 +1,7 @@
 import { collectCompleted } from './_ticktickCompleted.js';
 import { readAbandonedTodayTaskIds } from './_ticktickAbandoned.js';
-import { calendarDateInTimeZone, isAlwaysTodayTask, matchCompletedOccurrences, nextRoutineSceneDate,
+import { nextTaskLocationDate } from './_ticktickLocation.js';
+import { calendarDateInTimeZone, isAlwaysTodayTask, matchCompletedOccurrences,
   readAllTickTickTasks, type TickTickApi, type TickTickTask } from './_ticktickTrips.js';
 
 // Read-only inspection of a named task. Never return notes, checklist contents,
@@ -33,5 +34,5 @@ export async function inspectTickTickTaskDate(api: TickTickApi, title: string, c
     && calendarDateInTimeZone(task.completedTime, 'Asia/Shanghai') === today));
   return { today, tasks: current.map((task, i) => ({ snapshot: dateFields(matches[i]), current: dateFields(task),
     alwaysToday: isAlwaysTodayTask(task), completedToday: wasCompleted(task), abandonedToday: abandoned.has(task.id),
-    nextSceneDate: nextRoutineSceneDate(task, calendarState, today) })) };
+    nextSceneDate: nextTaskLocationDate(task, calendarState, today) })) };
 }

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { schedulingFailure } from './_schedulingFailure';
 import { planTickTickDay } from './_ticktickDailyPlan';
+import { BEIJING, GUANGZHOU } from '../src/utils/internship';
 import { routineTaskDate, syncTickTickAlwaysToday, syncTickTickRoutines, type TickTickApi, type TickTickTask } from './_ticktickTrips';
 
 vi.mock('@vercel/kv', () => ({ kv: { get: async () => null } }));
@@ -30,6 +31,51 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date(`${day}T00:00:0
 afterEach(() => vi.useRealTimers());
 
 describe('always-today 截止日期', () => {
+  it('北京居任务跨年排到二月，重复同步不拉回今天，到达后才恢复固定今日', async () => {
+    const today = '2026-11-10', arrival = '2027-02-12';
+    vi.setSystemTime(new Date(`${today}T10:00:00+08:00`));
+    const original = makeTask('bedtime', { title: '下班洗洗睡觉!', tags: ['hidden', 'always-today', '当天', 'routine', '居', '北京', '活'],
+      startDate: `${today}T21:50:00+0800`, dueDate: `${today}T22:20:00+0800`, isAllDay: false,
+      priority: 5, repeatFlag: 'RRULE:FREQ=DAILY', repeatFrom: '1', reminders: ['TRIGGER:PT0S'], content: '(30m)' });
+    const f = fixture([original]);
+    const calendarState = { tagMap: { [today]: 'intern', [arrival]: 'school', '2027-02-13': 'school' },
+      cityMap: { [today]: GUANGZHOU, [arrival]: BEIJING, '2027-02-13': BEIJING } };
+    await syncTickTickAlwaysToday(f.api, { calendarState });
+    expect(f.saved.get(original.id)).toEqual({ ...original, startDate: `${arrival}T21:50:00+0800`, dueDate: `${arrival}T22:20:00+0800` });
+    expect((await syncTickTickAlwaysToday(f.api, { calendarState })).updated).toBe(0);
+    vi.setSystemTime(new Date('2027-02-13T10:00:00+08:00'));
+    await syncTickTickAlwaysToday(f.api, { calendarState });
+    expect(f.saved.get(original.id)).toEqual({ ...original, startDate: '2027-02-13T21:50:00+0800', dueDate: '2027-02-13T22:20:00+0800' });
+  });
+  it('城市与寄居旅分别取并集、两类取交集，只有城市也必须检查', async () => {
+    const next = '2026-10-22';
+    const tasks = [makeTask('city-only', { tags: ['always-today', '北京'] }),
+      makeTask('either-city', { tags: ['always-today', '北京', '广州', '居', '寄'] }),
+      makeTask('wrong-scene', { tags: ['always-today', '广州', '旅'] }),
+      makeTask('configured-city', { tags: ['always-today', '自定义城市'] })];
+    const f = fixture(tasks);
+    await syncTickTickAlwaysToday(f.api, { calendarState: { tagMap: { [day]: 'intern', [next]: 'school' },
+      cityMap: { [day]: GUANGZHOU, [next]: BEIJING }, locationCities: [{ ...BEIJING, name: '自定义城市' }] } });
+    expect(routineTaskDate(f.saved.get('city-only')!)).toBe(next);
+    expect(routineTaskDate(f.saved.get('either-city')!)).toBe(day);
+    expect(f.saved.get('wrong-scene')).toEqual(tasks[2]);
+    expect(f.saved.get('configured-city')).toEqual(tasks[3]);
+  });
+  it('城市不明确或没有共同适用日时保留原日期', async () => {
+    const original = makeTask('unknown-city', { tags: ['always-today', '北京', '居'] });
+    const f = fixture([original]);
+    await syncTickTickAlwaysToday(f.api, { calendarState: { tagMap: { [day]: 'school' } } });
+    expect(f.saved.get(original.id)).toEqual(original); expect(f.updateTask).not.toHaveBeenCalled();
+  });
+  it('异地固定今日仍保留当天完成及放弃的下一次日期', async () => {
+    const originals = [makeTask('done', { title: '已做', tags: ['always-today', '北京'], repeatFlag: 'RRULE:FREQ=DAILY' }),
+      makeTask('abandoned', { tags: ['always-today', '北京'] })];
+    const f = fixture(originals);
+    f.completed.mockResolvedValue([{ ...originals[0], status: 2, completedTime: `${day}T00:00:00+08:00` }]);
+    await syncTickTickAlwaysToday(f.api, { calendarState: { cityMap: { [day]: GUANGZHOU, '2027-02-12': BEIJING } },
+      protectedTaskIds: new Set(['abandoned']) });
+    expect([...f.saved.values()]).toEqual(originals); expect(f.updateTask).not.toHaveBeenCalled();
+  });
   it('游日的居寄固定今日任务移到最近适用日，回到居日恢复今天且保留提醒', async () => {
     const task = makeTask('eggs', { tags: ['always-today', '当天', '居', '寄'], priority: 5,
       dueDate: `${day}T08:30:00+0800`, isAllDay: false, repeatFlag: 'RRULE:FREQ=DAILY', reminders: ['TRIGGER:PT0S'] });

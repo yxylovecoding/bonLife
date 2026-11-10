@@ -61,7 +61,7 @@ describe('地点匹配与日期规则分离', () => {
     expect(taskLocationAllowed(task('南京', { tags: ['居', '南京'] }), state, today)).toBe(true);
     expect(nextTaskLocationDate(task('city'), state, today)).toBe(later);
   });
-  it.each([['always-today'], ['洗头'], ['routine'], []].map(tags => ({ tags })))('$tags 城市标签只控制显隐，不改写时刻、提醒与重复规则', async ({ tags }) => {
+  it.each([['洗头'], ['routine'], []].map(tags => ({ tags })))('$tags 旧版场景同步保留独立专项日期和任务字段', async ({ tags }) => {
     const original = task('city', { tags: [...tags, '北京'], isAllDay: false, dueDate: `${today}T20:00:00+0800`,
       reminders: ['TRIGGER:PT0S'], priority: 5, repeatFlag: 'RRULE:FREQ=DAILY' });
     const f = fixture([original, task('wash', { title: '洗头', tags: [] })]);
@@ -106,11 +106,15 @@ describe('地点匹配与日期规则分离', () => {
     const forecast = { fetchedAt: now.toISOString(), days: { [today]: sunny, [tomorrow]: sunny, [later]: sunny, '2026-10-31': sunny } };
     expect(chooseLaundryDay(task('wash'), today, options, () => forecast)).toBe(tomorrow);
   });
-  it('轻量 fixed-today 不因城市标签改为其他日期', async () => {
+  it('轻量 fixed-today 读取日历并按城市改到最近适用日，保留时刻与重复设置', async () => {
     data.set('app-config', config); data.set('calendar-tags', { tagMap: calendarState.tagMap });
-    const f = fixture([task('city', { tags: ['always-today', '北京'] })]);
+    const original = task('city', { tags: ['always-today', '北京'], isAllDay: false,
+      dueDate: `${today}T20:00:00+0800`, reminders: ['TRIGGER:PT0S'], priority: 5, repeatFlag: 'RRULE:FREQ=DAILY' });
+    const f = fixture([original]);
     await syncTickTickAlwaysToday(f.api);
-    expect(routineTaskDate(f.stored.get('city')!)).toBe(today);
+    expect(f.stored.get('city')).toEqual({ ...original, dueDate: `${tomorrow}T20:00:00+0800` });
+    await syncTickTickRoutines({ api: f.api, calendarState, today });
+    expect(f.update).toHaveBeenCalledOnce();
   });
 });
 
