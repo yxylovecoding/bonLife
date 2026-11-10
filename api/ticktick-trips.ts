@@ -4,7 +4,7 @@ import { cloudSchedulerAuthOk } from './_cloudSchedulerAuth.js';
 import { schedulerResponse } from './_schedulerResponse.js';
 import { privateCache, privateJson } from './_privateCache.js';
 import { withAccountScope } from './_accountRoute.js';
-import { authorizeAccountScope } from './_accountScope.js';
+import { authorizeAccountScope, isOwnerScope } from './_accountScope.js';
 import { createHash } from 'node:crypto';
 import { DAILY_PLAN_KEY, DAILY_PLAN_SETTINGS_KEY, dailyBudget, type DailyPlanState } from './_ticktickDailyPlan.js';
 import { authOk } from './_auth.js';
@@ -154,6 +154,12 @@ async function handler(req: VercelRequest, res: VercelResponse) {
   if (!isCron && !await authOk(req)) return res.status(401).json({ error: 'unauthorized' });
 
   try {
+    if (req.query?.action === 'scheduler-status') {
+      if (req.method !== 'GET') return res.status(405).json({ error: 'method not allowed' });
+      if (!isOwnerScope()) return res.status(403).json({ error: 'owner authorization required' });
+      const { readCloudSchedulerStatus } = await import('./_cloudScheduler.js');
+      return res.status(200).json(await readCloudSchedulerStatus());
+    }
     if (req.query?.action === 'rules') {
       const { readSchedulingRules, saveSchedulingRules, RuleConfigError, RULE_RUN_KEY } = await import('./_schedulingRules.js');
       if (req.method === 'GET') {

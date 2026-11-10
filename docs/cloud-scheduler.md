@@ -29,6 +29,7 @@ Worker 固定调用 Render 服务地址，不接受请求方提供目标 URL、�
 
 ## 检查与恢复
 
+- BonLog 账号所有者可通过已登录的 `GET /api/ticktick-trips?action=scheduler-status` 读取同一队列的脱敏状态；只返回触发时间、阶段、状态、HTTP 状态和固定失败类别，不触发任务，也不返回密钥或业务记录。
 - `GET /status`：附 `Authorization: Bearer <DISPATCH_SECRET>`，返回最近 3 天、最多 200 条队列状态和 `lastCronAt`。仅输出固定阶段、时间、HTTP 状态和失败类别。
 - `POST /dispatch`：同样鉴权，JSON `{ "kind": "full", "id": "<唯一请求ID>" }` 或 `kind=hourly`。相同 ID 去重，正在排队或执行的同类请求合并；不发邮件。
 - 一次 Durable Object alarm 只执行一次有超时的 HTTP 调用，完成状态持久化后唤醒下一步。任务不会依赖 HTTP 客户端保持连接，也不依赖本地进程。
