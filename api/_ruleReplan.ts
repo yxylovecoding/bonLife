@@ -13,7 +13,8 @@ import { visibilityInputs, visibilityRules, visibilityDecision } from './_taskVi
 import { sleepWindow, sleepTagStateKey } from './_ticktickSleepTags.js';
 import { hasHiddenTag } from './_ticktickNightRoutine.js';
 import { withHiddenTag } from './_ticktickHiddenTag.js';
-import { nextTaskLocationDate, taskCityTags, taskLocationAllowed } from './_ticktickLocation.js';
+import { hasTaskLocation, nextTaskLocationDate, taskCityTags, taskLocationAllowed } from './_ticktickLocation.js';
+import { hairWashLocationDate } from './_hairWashLocation.js';
 import { syncOutlookCalendar, saveOutlookSnapshot, OUTLOOK_CONNECTION_KEY, type OutlookConnection } from './_outlookSync.js';
 import { decryptOutlookConnection, readOutlookSnapshot } from './_outlookCalendar.js';
 import { applyOutlookSnapshotToState, type OutlookAvailability } from '../src/utils/outlookCalendar.js';
@@ -21,7 +22,7 @@ import { availabilityProfile } from './_dailyAvailability.js';
 import { DAILY_PLAN_KEY, DAILY_PLAN_SETTINGS_KEY, dailyBudget, refreshDailyHistory, planTickTickDay, type DailyPlanState } from './_ticktickDailyPlan.js';
 import { syncExerciseSchedule, isExerciseTask } from './_ticktickExercise.js';
 import { syncLaundrySchedule, isLaundryTask } from './_ticktickLaundry.js';
-import { postponeSwimmingTasks, readSwimmingCycle } from './_lifeSwimming.js';
+import { postponeSwimmingTasks, readHairWashSchedule, readSwimmingCycle } from './_lifeSwimming.js';
 import { syncPeriodPredictionTask } from './_ticktickPeriodPrediction.js';
 import { syncLaundryOutlook } from './_outlookLaundry.js';
 import { syncChargingOutlook } from './_outlookCharging.js';
@@ -406,6 +407,48 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       };
       const allowed = (id: SchedulingRuleId) => run.results.find(r => r.id === id)?.status === 'success';
       propagate();
+      // Washing followers still need a day in their own city/scene. Resolve
+      // the intersection after all date proposals, including in hourly runs.
+      const locationResult = run.results.find(r => r.id === 'scene-date');
+      if (locationResult && handlers['scene-date'] && !config.removed?.includes('scene-date') && !config.removed?.includes('hair-follow')) {
+        const completedToday = matchCompletedOccurrences(tasks, state.history.filter(record =>
+          calendarDateInTimeZone(record.completedTime, 'Asia/Shanghai') === today));
+        const followers = draft.values().filter(t => pending(t) && followsHairWash(t) && hasTaskLocation(t, calendarState)
+          && !excluded.has(t.id) && !abandonedToday.has(t.id) && !completedToday(t) && !isAlwaysTodayTask(t) && !isEyeDrops(t));
+        draft.requireRule('scene-date', followers.map(t => t.id));
+        if (followers.length && allowed('scene-date')) {
+          const flexible = new Set<SchedulingRuleId>(['scene-date', 'hair-follow', 'swimming', 'exercise', 'exercise-rollover', 'repeat-date']
+            .filter(id => allowed(id as SchedulingRuleId)) as SchedulingRuleId[]);
+          const branch = draft.branch('scene-date', flexible);
+          try {
+            if (!visibility.locations) throw new Error('地点读取失败，保留当前排期');
+            const schedule = readHairWashSchedule(draft.values());
+            const swimEnabled = !config.removed?.includes('swimming');
+            const needsSwimming = swimEnabled && followers.some(t => t.title.includes('游泳'));
+            if (needsSwimming && periodError) throw new Error('经期来源暂不可用');
+            const swimming = needsSwimming ? await readSwimmingCycle([Number(today.slice(0, 4)), Number(today.slice(0, 4)) + 1, Number(today.slice(0, 4)) + 2]) : undefined;
+            for (const task of followers) {
+              for (const id of ['hair-follow', ...(task.title.includes('游泳') && swimEnabled ? ['swimming'] : [])] as SchedulingRuleId[]) {
+                const result = run.results.find(r => r.id === id);
+                if (handlers[id] && result?.status !== 'success') throw new Error('洗头或游泳日期来源未确认');
+              }
+              const owner = draft.dateOwner(task.id);
+              if (owner && !flexible.has(owner)) continue;
+              if (routineRecurrence(task.repeatFlag) === 'unknown') continue;
+              const original = tasks.find(t => t.id === task.id);
+              const from = [today, routineTaskDate(task), original && routineTaskDate(original)].filter((d): d is string => Boolean(d)).sort().at(-1)!;
+              const date = hairWashLocationDate(task, schedule, from, calendarState, task.title.includes('游泳') ? swimming : undefined);
+              if (!date) throw new Error('洗头与地点没有可确认的共同日期');
+              await branch.api.updateTask(task.id, routineTaskPayload(task, date));
+            }
+            const changes = branch.accept();
+            locationResult.matched += changes.matched;
+            locationResult.conflicts = [...locationResult.conflicts ?? [], ...changes.conflicts ?? []];
+          } catch (error) {
+            branch.reject(); locationResult.status = 'failed'; locationResult.reason = schedulingRuleFailureReason(error); propagate();
+          }
+        }
+      }
       const sprayResult = run.results.find(r => r.id === 'sprays');
       if (sprayResult && handlers.sprays && !config.removed?.includes('sprays')) {
         const values = draft.values(), sprays = values.filter(t => pending(t) && sprayKind(t) && !excluded.has(t.id));

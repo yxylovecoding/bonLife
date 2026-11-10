@@ -211,6 +211,52 @@ describe('城市待办日期', () => {
     m.data.set('app-config', { config: { schoolCity: BEIJING, homeCity: GUANGZHOU } });
     m.data.set('calendar-tags', { tagMap: { [day]: 'home', '2027-02-11': 'home', [arrival]: 'school', '2027-02-13': 'school' } });
   });
+  const swimmingPrep = () => task('prep', { title: '下班准备游泳', priority: 5, tags: ['北京', '居', '洗头', 'routine', 'hidden'],
+    isAllDay: false, startDate: `${day}T21:00:00+0800`, dueDate: `${day}T21:15:00+0800`,
+    repeatFlag: 'RRULE:FREQ=DAILY;INTERVAL=2', repeatFrom: '0', reminders: ['TRIGGER:PT0S'] });
+  const washing = () => task('wash', { title: '洗头', priority: 5, tags: ['hidden'],
+    dueDate: '2026-11-04T22:00:00+0800', repeatFlag: 'RRULE:FREQ=DAILY;INTERVAL=2' });
+  it.each(['full', 'hourly'] as const)('%s 游泳准备同时符合北京、居、洗头周期，跨年且重复运行不拉回', async scope => {
+    const original = swimmingPrep(); m.tasks = [structuredClone(original), washing()];
+    const result = await runRuleReplan({ scope });
+    expect(status(result, 'scene-date').status).toBe('success');
+    expect(m.tasks[0]).toEqual({ ...original, startDate: `${arrival}T21:00:00+0800`, dueDate: `${arrival}T21:15:00+0800` });
+    const writes = m.write.mock.calls.filter(([id]) => id === 'prep').length;
+    await runRuleReplan({ scope });
+    expect(m.write.mock.calls.filter(([id]) => id === 'prep')).toHaveLength(writes);
+  });
+  it.each([['hair-follow', 'scene-date'], ['scene-date', 'hair-follow'], ['swimming', 'scene-date']] as SchedulingRuleId[][])('交换 %s / %s 仍取共同日期', async (first, second) => {
+    config([first, second]); m.tasks = [swimmingPrep(), washing()];
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks[0].startDate).toBe(`${arrival}T21:00:00+0800`);
+  });
+  it('首次地点日不是洗头日或处于经期时继续查找，不把游泳仅移到到达日', async () => {
+    m.data.set('calendar-tags', { tagMap: { [day]: 'home', '2026-11-05': 'school', '2026-11-06': 'school', '2026-11-08': 'school' } });
+    m.data.set('bonlife:settings:v1', { cycle: { lastPeriodStart: '2026-11-06', cycleLength: 28, periodLength: 2, trainingDays: [], automatic: false } });
+    m.tasks = [swimmingPrep(), washing()];
+    const result = await runRuleReplan({ scope: 'hourly' });
+    expect(status(result, 'scene-date').status).toBe('success');
+    expect(m.tasks[0].startDate).toBe('2026-11-08T21:00:00+0800');
+  });
+  it.each(['no-common-date', 'location-read', 'missing-wash'] as const)('%s 无法确认共同日期时不写入洗头跟随的错误提案', async failure => {
+    m.tasks = [swimmingPrep(), washing()];
+    if (failure === 'no-common-date') m.data.set('calendar-tags', { tagMap: { [day]: 'home' } });
+    if (failure === 'location-read') m.locationFailure = true;
+    if (failure === 'missing-wash') m.tasks.pop();
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'scene-date').status).toBe('failed');
+    expect(m.tasks[0].startDate).toBe(`${day}T21:00:00+0800`);
+    expect(m.write.mock.calls.filter(([id]) => id === 'prep')).toHaveLength(0);
+  });
+  it('当天放弃或完成的游泳准备不被地点校验拉回安排', async () => {
+    m.tasks = [swimmingPrep(), washing()];
+    m.abandoned = [{ ...m.tasks[0], status: -1, completedTime: `${day}T09:00:00+0800` }];
+    await runRuleReplan({ scope: 'hourly' });
+    expect(m.tasks[0].startDate).toBe(`${day}T21:00:00+0800`);
+    m.abandoned = []; m.history = [{ ...m.tasks[0], status: 2, completedTime: `${day}T09:00:00+0800` }];
+    await runRuleReplan({ scope: 'hourly' });
+    expect(m.tasks[0].startDate).toBe(`${day}T21:00:00+0800`);
+  });
   it.each(['full', 'hourly', 'visibility', 'midnight'] as const)('%s 固定今日先满足地点，排到二月且重复同步不拉回', async mode => {
     if (mode === 'midnight') vi.setSystemTime(new Date(`${day}T00:01:00+08:00`));
     m.data.set('calendar-tags', { tagMap: { [day]: 'school', [arrival]: 'school' }, dayOverrides: { [day]: { city: GUANGZHOU } } });
