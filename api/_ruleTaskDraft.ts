@@ -13,16 +13,22 @@ const persistedField = (key: string, a: unknown, b: unknown): boolean => same(em
   || key === 'items' && Array.isArray(a) && Array.isArray(b) && a.length === b.length && b.every((expected, index) => {
     const actual = a[index];
     if (!actual || !expected) return same(actual, expected);
+    if (!expected.startDate && actual.startDate) return false;
     // TickTick adds checklist metadata/defaults and serializes dates in UTC.
     // Confirm every submitted field, including identity, order and progress.
     return Object.entries(expected).filter(([, value]) => value !== undefined).every(([field, value]) =>
       field === 'status' ? Number(actual[field] ?? 0) === Number(value ?? 0)
         || [1, 2].includes(Number(actual[field])) && [1, 2].includes(Number(value))
-        : persistedField(field, actual[field], value));
+        : field === 'isAllDay' && !actual.startDate && !expected.startDate
+          || persistedField(field, actual[field], value));
   })
   || key === 'tags' && Array.isArray(a) && Array.isArray(b) && same([...a].sort(), [...b].sort())
   || (key === 'startDate' || key === 'dueDate') && typeof a === 'string' && typeof b === 'string'
     && Number.isFinite(Date.parse(a)) && Date.parse(a) === Date.parse(b);
+// An undated checklist item has no all-day/time-of-day distinction. TickTick
+// can normalize this flag on reads/writes; it must not cause endless rewrites.
+const fieldChanged = (key: string, a: unknown, b: unknown) => key === 'items'
+  ? !persistedField(key, a, b) || !persistedField(key, b, a) : !same(a, b);
 const dateFields = new Set<string>(['startDate', 'dueDate', 'isAllDay', 'timeZone', 'items']);
 const group = (key: string) => dateFields.has(key) ? 'date' : key;
 const ruleGroup = (id: SchedulingRuleId, key: string) => id === 'template-content' && key === 'items' ? 'template-items' : group(key);
@@ -174,7 +180,7 @@ export class RuleTaskDraft {
           const before = base.get(taskId);
           if (!before) continue;
           const owners = this.owners.get(taskId) ?? new Map<string, SchedulingRuleId>();
-          for (const key of fields) if (!same(task[key], before[key]) && !owners.has(ruleGroup(id, key))) owners.set(ruleGroup(id, key), id);
+          for (const key of fields) if (fieldChanged(key, task[key], before[key]) && !owners.has(ruleGroup(id, key))) owners.set(ruleGroup(id, key), id);
           this.owners.set(taskId, owners);
         }
       },
@@ -184,7 +190,7 @@ export class RuleTaskDraft {
         for (const [taskId, task] of branch) {
           const before = base.get(taskId);
           if (!before) { this.tasks.set(taskId, task); this.created.add(taskId); this.createdBy.set(taskId, id); matched++; continue; }
-          const changed = fields.filter(key => !same(task[key], before[key]));
+          const changed = fields.filter(key => fieldChanged(key, task[key], before[key]));
           if (!changed.length && !claims.has(taskId)) continue;
           const owners = this.owners.get(taskId) ?? new Map<string, SchedulingRuleId>();
           const next = structuredClone(this.tasks.get(taskId)!);
@@ -244,7 +250,7 @@ export class RuleTaskDraft {
     afterRule: (id: SchedulingRuleId) => Promise<void>;
     failed: (ids: SchedulingRuleId[], error: unknown) => void;
   }) {
-    const changed = this.values().filter(task => !this.created.has(task.id) && fields.some(k => !same(task[k], this.original.get(task.id)?.[k])));
+    const changed = this.values().filter(task => !this.created.has(task.id) && fields.some(k => fieldChanged(k, task[k], this.original.get(task.id)?.[k])));
     const allowed = (id: SchedulingRuleId | undefined) => !id || !options || options.allowed(id);
     const ownerIds = (id: string) => [...new Set([...this.owners.get(id)?.values() ?? [], ...this.requiredRules.get(id) ?? []])];
     const validState = (fresh: TickTickTask, original: TickTickTask) => pending(fresh) && pending(original) && !hasNewTaskCompletion(fresh, original)
@@ -345,7 +351,7 @@ export class RuleTaskDraft {
         if (!validated.has(taskId)) continue;
         const task = eligibleTask(this.tasks.get(taskId)!);
         const original = this.original.get(taskId)!;
-        if (!fields.some(k => !same(task[k], original[k]))) continue;
+        if (!fields.some(k => fieldChanged(k, task[k], original[k]))) continue;
         try {
           const fresh = await this.source.getTask(task.projectId, task.id);
           verify(fresh, original, original, 'before');

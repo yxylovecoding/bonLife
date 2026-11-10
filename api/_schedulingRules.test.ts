@@ -347,6 +347,43 @@ it('已有任务检查项 ID 改变时拒绝确认，不以新建时的 ID 分�
   const branch = draft.branch('template-content'); await branch.api.updateTask('one', { title: '搬家-京广-11.5 · 出门前一天' });
   branch.accept(); await expect(draft.commit()).rejects.toThrow('写后回读不一致（items）');
 });
+
+it.each(['before', 'after'])('无日期检查项的全天标记在 %s 回读规范化，不误判内容变化', async phase => {
+  const original = task({ items: [{ id: 'one-item', title: '随身物品', status: 1, isAllDay: false }] });
+  const c = client(original), draft = new RuleTaskDraft(c.api, [original]);
+  const branch = draft.branch('trips'); await branch.api.updateTask('one', { title: '行程 · 随身物品' }); branch.accept();
+  if (phase === 'before') c.tasks.get('one')!.items![0].isAllDay = true;
+  else c.write.mockImplementation(async (id, payload) => {
+    c.tasks.set(id, { ...c.tasks.get(id)!, ...payload, items: (payload.items as NonNullable<TickTickTask['items']>).map(i => ({ ...i, isAllDay: true })) });
+    return c.tasks.get(id)!;
+  });
+  await expect(draft.commit()).resolves.toBe(1);
+  expect(c.tasks.get('one')!.items![0]).toMatchObject({ id: 'one-item', title: '随身物品', status: 1 });
+  expect(c.tasks.get('one')!.items![0].startDate).toBeUndefined();
+});
+
+it('仅无日期检查项全天标记不同不反复写回', async () => {
+  const original = task({ items: [{ id: 'one-item', title: '随身物品', status: 0, isAllDay: true }] });
+  const c = client(original), draft = new RuleTaskDraft(c.api, [original]), branch = draft.branch('trips');
+  await branch.api.updateTask('one', { items: [{ ...original.items![0], isAllDay: false }] });
+  expect(branch.accept().matched).toBe(0); await expect(draft.commit()).resolves.toBe(0);
+  expect(c.write).not.toHaveBeenCalled();
+});
+
+it.each(['flag', 'added-date', 'removed-date', 'changed-date'])('检查项实际日期含义改变仍拒绝确认：%s', async change => {
+  const original = task({ items: [{ id: 'one-item', title: '定时物品', status: 0, isAllDay: false,
+    ...(change !== 'added-date' ? { startDate: '2026-11-20T08:00:00+0800' } : {}) }] });
+  const c = client(original), draft = new RuleTaskDraft(c.api, [original]), branch = draft.branch('trips');
+  c.write.mockImplementation(async (id, payload) => {
+    const items = structuredClone(payload.items as NonNullable<TickTickTask['items']>);
+    if (change === 'flag') items[0].isAllDay = true;
+    else if (change === 'removed-date') delete items[0].startDate;
+    else items[0].startDate = '2026-11-21T08:00:00+0800';
+    c.tasks.set(id, { ...c.tasks.get(id)!, ...payload, items }); return c.tasks.get(id)!;
+  });
+  await branch.api.updateTask('one', { title: '行程 · 定时物品' }); branch.accept();
+  await expect(draft.commit()).rejects.toThrow('写后回读不一致（items）');
+});
 it('已有任务新增检查项接纳服务端 ID，保留原条目 ID 和进度并保存新增关联', async () => {
   const original = task({ items: [{ id: 'known', title: '已有物品', status: 1 }] });
   const c = client(original), draft = new RuleTaskDraft(c.api, [original]);
