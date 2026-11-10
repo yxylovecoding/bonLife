@@ -36,7 +36,7 @@ export async function readCloudSchedulerStatus() {
     'backup-incomplete', 'period-import', 'busy', 'incomplete', 'rules-incomplete', 'plan-incomplete',
     'visibility-incomplete', 'email-cancelled', 'missing-run-secret', 'response-unknown', 'origin-not-ready']);
   const time = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
-  return { lastCronAt: time(result.lastCronAt), jobs: result.jobs.slice(-200).map((job: any) => ({
+  return { schedulerHost: url.hostname, lastCronAt: time(result.lastCronAt), jobs: result.jobs.slice(-200).map((job: any) => ({
     kind: ['full', 'hourly', 'night', 'midnight', 'monthly-backup'].includes(job.kind) ? job.kind : 'other',
     status: statuses.has(job.status) ? job.status : 'unknown',
     scheduledAt: time(job.scheduledAt), startedAt: time(job.startedAt), finishedAt: time(job.finishedAt),
