@@ -89,6 +89,53 @@ describe('滚动训练恢复日', () => {
     expect(withSwimming.recoveryByDate).toEqual(withoutSwimming.recoveryByDate);
     expect(withSwimming.plans.get('2026-10-05')).toMatchObject({ plan: '主训练休息\n游泳', projects: ['游泳'], completed: true });
   });
+  it.each([false, true])('手动游泳记录与当天 HIIT 并存，游泳完成=%s 不推进主训练', (completed) => {
+    const swim: TrainingRecord = { plan: '游泳 · 50 分钟', projects: ['游泳'], effort: 'normal', completed, mode: 'manual' };
+    const entries = { 'training:2026-10-05': entry(swim) };
+    const baseline = run();
+    const result = run(source(), '2026-10-05', entries);
+    expect(result.plans.get('2026-10-05')).toMatchObject({ projects: ['hiit', '游泳'], completed: false });
+    expect(result.plans.get('2026-10-05')?.plan).toBe(`HIIT\n游泳 · 50 分钟${completed ? ' · 已完成' : ''}`);
+    expect(result.byDate.get('2026-10-05')?.map(task => task.name)).toEqual(completed ? ['HIIT'] : ['HIIT', '游泳']);
+    expect([...(result.completedByDate.get('2026-10-05') ?? [])]).toEqual(completed ? ['游泳'] : []);
+    expect(result.coverage.find(item => item.task.name === 'HIIT')?.lastCompleted).toBeUndefined();
+    const mainPlans = (value: ReturnType<typeof run>) => [...value.plans].map(([date, record]) => [date, record.projects?.filter(key => key !== '游泳') ?? []]);
+    expect(mainPlans(result)).toEqual(mainPlans(baseline));
+    expect(result.recoveryByDate).toEqual(baseline.recoveryByDate);
+    expect(entries['training:2026-10-05'].training).toBe(swim);
+    expect(swim.projects).toEqual(['游泳']);
+  });
+  it('旧版无项目标识及自动已完成游泳也保留主训练，历史游泳不改写', () => {
+    for (const mode of ['manual', 'auto', undefined] as const) {
+      const swim: TrainingRecord = { plan: '游泳 · 50 分钟', effort: 'normal', completed: true, mode };
+      const result = run(source(), '2026-10-05', { 'training:2026-10-05': entry(swim), 'training:2026-10-04': entry(swim) });
+      expect(result.plans.get('2026-10-05')).toMatchObject({ projects: ['hiit', '游泳'], completed: false });
+      expect(result.plans.get('2026-10-04')).toBe(swim);
+    }
+  });
+  it('手动游泳完成仍遵守主训练恢复和场景；主训练完成后不重复安排', () => {
+    const swim: TrainingRecord = { plan: '游泳', projects: ['游泳'], effort: 'normal', completed: true, mode: 'manual' };
+    const input = source(); input.entries = { 'training:2026-10-05': entry(swim) };
+    input.completions = ['02', '03', '04'].map(day => ({ project: '上半身', date: `2026-10-${day}` }));
+    expect(run(input).plans.get('2026-10-05')).toMatchObject({ plan: '主训练休息\n游泳', projects: ['游泳'], completed: true });
+    input.completions = [{ project: 'hiit', date: '2026-10-05' }];
+    expect(run(input).plans.get('2026-10-05')).toMatchObject({ projects: ['hiit', '游泳'], completed: true });
+    input.completions = [];
+    const blocked = rollingTrainingPlan(2026, 10, '2026-10-05', input, DEFAULT_CYCLE, [], {}, (_task, date) => date !== '2026-10-05');
+    expect(blocked.plans.get('2026-10-05')).toMatchObject({ projects: ['游泳'], completed: true });
+  });
+  it('TickTick 已完成游泳与手动未勾选记录合并去重，两项都完成后当天完成', () => {
+    const swim: TrainingRecord = { plan: '游泳 · 50 分钟', projects: ['游泳'], effort: 'normal', completed: false, mode: 'manual' };
+    const input = source(); input.entries = { 'training:2026-10-05': entry(swim) };
+    input.completions = [{ project: '游泳', date: '2026-10-05' }];
+    expect(run(input).plans.get('2026-10-05')).toMatchObject({ plan: 'HIIT\n游泳 · 50 分钟 · 已完成', projects: ['hiit', '游泳'], completed: false });
+    input.completions.push({ project: 'hiit', date: '2026-10-05' });
+    const result = run(input).plans.get('2026-10-05');
+    expect(result?.completed).toBe(true);
+    expect(result?.projects).toHaveLength(2);
+    expect(result?.plan.match(/游泳/g)).toHaveLength(1);
+    expect(swim.completed).toBe(false);
+  });
   it('中文浏览器与英文后台按相同顺序轮换，恢复日和游泳日期也一致', () => {
     const compare = String.prototype.localeCompare;
     let locale = 'zh-CN';

@@ -247,6 +247,11 @@ export function rollingTrainingPlan(year: number, month: number, today: string, 
   for (let date = today; date <= days[days.length - 1]; date = shiftDay(date, 1)) {
     const saved = entries[`training:${date}`]?.training;
     const done = [...(actual.get(date) ?? [])].map((key) => byKey.get(key)!);
+    // A swimming-only entry records the independent session, not a replacement
+    // for the whole day's main workout. Keep the saved entry itself untouched.
+    const savedProjects = saved ? recordedTrainingProjects(saved, tasks) : [];
+    const independentSwimming = saved && (saved.completed || saved.mode !== 'auto')
+      && (!saved.completed || date === today) && savedProjects.length && savedProjects.every(key => !isMainProject(key)) ? saved : undefined;
     const phase = cycleDay(date, settings, periods);
     const mainDone = done.some(task => !isSwimmingTraining(task));
     const main = tasks.filter((task) => {
@@ -257,11 +262,12 @@ export function rollingTrainingPlan(year: number, month: number, today: string, 
       || compareTrainingOrder(trainingIdentity(a), trainingIdentity(b))).slice(0, 1);
     let suggested = [...main, ...tasks.filter(task => allowed(task, date) && swims.get(trainingIdentity(task))?.has(date)
       && !actual.get(date)?.has(trainingIdentity(task)))];
+    if (independentSwimming) suggested = suggested.filter(task => !savedProjects.includes(trainingIdentity(task)));
     let record: TrainingRecord;
-    if (saved && (saved.completed || saved.mode !== 'auto')) {
+    if (saved && !independentSwimming && (saved.completed || saved.mode !== 'auto')) {
       record = saved;
     } else {
-      const effort = saved?.effort ?? 'normal';
+      const effort = independentSwimming ? 'normal' : saved?.effort ?? 'normal';
       record = automaticTraining(date, suggested, settings, periods, effort);
       if (!mainDone && recordedTrainingProjects(record, tasks).some(isMainProject)) {
         const recovery = requiredTrainingRecovery(date, activeDays);
@@ -271,11 +277,21 @@ export function rollingTrainingPlan(year: number, month: number, today: string, 
           record = automaticTraining(date, suggested, settings, periods, effort);
         }
       }
+      const pendingSwimming = independentSwimming ? savedProjects.filter(key => !actual.get(date)?.has(key)) : [];
+      if (independentSwimming && pendingSwimming.length) {
+        const pending = recordedTrainingProjects(record, tasks);
+        record = { ...record, plan: [...(pending.length ? [record.plan] : []), independentSwimming.plan].join('\n'),
+          projects: [...pending, ...pendingSwimming] };
+        suggested = [...suggested, ...pendingSwimming.map(key => byKey.get(key)!)];
+      }
       if (done.length) {
         const pending = recordedTrainingProjects(record, tasks);
+        const completedPlans = done.filter(task => !independentSwimming || pendingSwimming.length || !savedProjects.includes(trainingIdentity(task)))
+          .map(task => `${task.name}${pending.length ? ' · 已完成' : ''}`);
+        if (independentSwimming && !pendingSwimming.length) completedPlans.push(`${independentSwimming.plan}${pending.length ? ' · 已完成' : ''}`);
         record = { ...record, completed: pending.length === 0,
-          plan: [...(pending.length ? [record.plan] : []), ...done.map(task => `${task.name}${pending.length ? ' · 已完成' : ''}`)].join('\n'),
-          projects: [...pending, ...done.map(trainingIdentity)] };
+          plan: [...(pending.length ? [record.plan] : []), ...completedPlans].join('\n'),
+          projects: [...new Set([...pending, ...done.map(trainingIdentity)])] };
       }
       if (recoveryByDate.has(date)) {
         const hasSwimming = recordedTrainingProjects(record, tasks).some(key => !isMainProject(key));

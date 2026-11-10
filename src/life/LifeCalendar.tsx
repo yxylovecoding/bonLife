@@ -268,7 +268,8 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
           className={`life-day${phase ? ` phase-${phase.phase}` : period ? ' phase-menstrual' : ''}${date === now ? ' is-today' : ''}`}
           aria-label={`${date} ${LIFE_LABELS[kind]} ${phaseLabel}${planStatus ? ` ${planStatus}` : ''}${summary ? `：${summary}` : '：未记录'}`}
           onClick={() => openEntry({ date, kind, text: '', revision: '', ...entry,
-            ...(planned ? { training: planned } : {}),
+            ...(planned ? { training: entry?.training && (entry.training.completed || entry.training.mode !== 'auto')
+              ? entry.training : planned } : {}),
             mutationId: crypto.randomUUID() })}>
           <span className="life-day-heading"><span className="life-day-number">{Number(date.slice(-2))}</span>{phaseLabel && <span className={`life-period-mark phase-${phase?.phase}`} aria-hidden="true">{phaseLabel}</span>}</span>
           {(kind === 'skin' || kind === 'eyes') && makeupSummary(entry?.makeup).length > 0 && <span className="life-day-text">{makeupSummary(entry?.makeup).join(' · ')}</span>}

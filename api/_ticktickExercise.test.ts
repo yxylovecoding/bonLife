@@ -39,6 +39,23 @@ function fakeApi(...tasks: TickTickTask[]) {
 beforeEach(() => { data.clear(); training.mockReset(); });
 
 describe('与网页共用实际完成轮换', () => {
+  it('手动游泳记录不把今天的 HIIT 顺延，完成状态只作用于游泳', async () => {
+    const hiit = workout({ id: 'hiit', title: 'HIIT-运动💪🏻是生活的第一个锚点🪝',
+      startDate: '2026-11-10T00:00:00+0800', dueDate: '2026-11-10T00:00:00+0800', isAllDay: true });
+    const input: TrainingSource = { year: 2026, connected: true, syncedAt: null,
+      tasks: [{ id: 'life:hiit', name: 'HIIT', title: hiit.title, dates: [], schedule: '', notes: '', links: [] }],
+      entries: { 'training:2026-11-10': { text: '', revision: 'swim', training: {
+        plan: '游泳', projects: ['游泳'], effort: 'normal', completed: true, mode: 'manual',
+      } } } };
+    training.mockResolvedValue(input);
+    expect(rollingExerciseDates('2026-11-10', input, DEFAULT_CYCLE, []).get('hiit')).toBe('2026-11-10');
+    const f = fakeApi(hiit);
+    const result = await syncExerciseSchedule(f.api, { rolling: true, connectionId: 'account',
+      now: now('2026-11-10T15:00:00'), calendarState: {} });
+    expect(result.fixedDates.get('hiit')).toBe('2026-11-10');
+    expect(f.update).not.toHaveBeenCalled();
+    expect(f.stored.get('hiit')).toEqual(hiit);
+  });
   const source = (): TrainingSource => ({ year: 2026, connected: true, syncedAt: null,
     tasks: ['全身力训', '臀腿', '爬坡'].map((name, i) => ({ id: `life:${i}`, name, title: `${name}-运动💪🏻是生活的第一个锚点🪝`, dates: [], schedule: '', notes: '', links: [] })),
     completions: [{ project: '臀腿', date: '2026-09-28' }, { project: '爬坡', date: '2026-10-03' }] });
