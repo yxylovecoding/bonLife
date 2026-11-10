@@ -30,6 +30,7 @@ Worker 固定调用 Render 服务地址，不接受请求方提供目标 URL、�
 ## 检查与恢复
 
 - BonLog 账号所有者可通过已登录的 `GET /api/ticktick-trips?action=scheduler-status` 读取同一队列的脱敏状态；只返回触发时间、阶段、状态、HTTP 状态和固定失败类别，不触发任务，也不返回密钥或业务记录。
+- Worker 的 `[scheduler-origin]` 日志区分就绪探测和业务调用，只保存 HTTP 状态、耗时、响应类型、Render 来源标记和固定失败阶段。`application-json` 且 `rulesComplete=false` 表示应用内规则未完成；非应用响应不能直接当作同一原因。历史无此记录时，不凭 502 状态码断言冷启动。运行日志不保存响应正文、任意响应头、请求地址、凭据或任务内容。
 - `GET /status`：附 `Authorization: Bearer <DISPATCH_SECRET>`，返回最近 3 天、最多 200 条队列状态和 `lastCronAt`。仅输出固定阶段、时间、HTTP 状态和失败类别。
 - `POST /dispatch`：同样鉴权，JSON `{ "kind": "full", "id": "<唯一请求ID>" }` 或 `kind=hourly`。相同 ID 去重，正在排队或执行的同类请求合并；不发邮件。
 - 一次 Durable Object alarm 至多执行一次有超时的业务 HTTP 调用，完成状态持久化后唤醒下一步。调用 Render 前先做一次最长 10 秒、无凭据的只读 `/healthz` 检查；仅收到 `200` 和 `ok: true` 才发业务请求。冷启动、502、加载页或就绪读取超时均由持久队列每 30 秒复查，最多 12 次；此时尚未发送业务请求，不会重复写待办。任务不会依赖 HTTP 客户端保持连接，也不依赖本地进程。

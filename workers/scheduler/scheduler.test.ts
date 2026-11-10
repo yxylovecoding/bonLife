@@ -30,6 +30,35 @@ describe('cloud schedule', () => {
   });
 });
 describe('response and retry boundary', () => {
+  it('distinguishes a gateway page from an application rule failure without logging private values', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn()
+        .mockResolvedValueOnce(new Response('<html>PRIVATE gateway body</html>', { status: 502, headers: { 'content-type': 'text/html' } }))
+        .mockResolvedValueOnce(Response.json({ ok: false, error: 'PRIVATE task error', rulesComplete: false }, { status: 502,
+          headers: { 'x-render-origin-server': 'Render', 'x-private': 'PRIVATE header' } })));
+      const env = { ORIGIN: 'https://backend.example', SCHEDULER_RUN_SECRET: 'PRIVATE credential' };
+      expect(await callAction('hourly-replan', env, attempt)).toMatchObject({ outcome: 'failed', http: 502 });
+      expect(await callAction('hourly-replan', env, attempt)).toMatchObject({ outcome: 'failed', http: 502 });
+      const records = log.mock.calls.map(call => JSON.parse(call[1]));
+      expect(records[0]).toMatchObject({ phase: 'business', http: 502, responseKind: 'html', renderOrigin: false });
+      expect(records[1]).toMatchObject({ phase: 'business', http: 502, responseKind: 'application-json', renderOrigin: true,
+        applicationError: true, rulesComplete: false });
+      expect(JSON.stringify(log.mock.calls)).not.toContain('PRIVATE');
+      expect(JSON.stringify(log.mock.calls)).not.toContain('backend.example');
+    } finally { log.mockRestore(); }
+  });
+  it('records readiness timeout separately from business requests', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('PRIVATE timeout detail', 'TimeoutError')));
+      expect(await callAction('hourly-replan', { ORIGIN: 'https://bonbills.onrender.com', SCHEDULER_RUN_SECRET: 'PRIVATE' }, attempt))
+        .toMatchObject({ outcome: 'retry', counter: 'warmups' });
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(log.mock.calls[0][1])).toMatchObject({ phase: 'readiness', http: 0, responseKind: 'none', networkError: 'TimeoutError' });
+      expect(JSON.stringify(log.mock.calls)).not.toContain('PRIVATE');
+    } finally { log.mockRestore(); }
+  });
   it('waits through Render cold-start failures before sending one business request', async () => {
     const env = { ORIGIN: 'https://bonbills.onrender.com', SCHEDULER_RUN_SECRET: 'PRIVATE' };
     const fetcher = vi.fn()

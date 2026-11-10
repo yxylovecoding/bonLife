@@ -2,21 +2,41 @@ const readStages = new Set(['outlook-refresh', 'tasks-read', 'completion-history
 const skipReasons = new Set(['rest-window', 'sleep-window', 'restore-pending', 'disconnected']);
 export const actionTimeout = action => action === 'full' || action === 'hourly-replan' ? 320_000
   : action === 'life-periods' ? 80_000 : 150_000;
+const stages = new Set([...readStages, 'completion-archive', 'timed-visibility', 'planning', 'finalize']);
+// Operational categories only: never emit bodies, URLs, credentials, or provider errors.
+function logOrigin(phase, action, started, response, body, error) {
+  const type = response?.headers.get('content-type') || '';
+  const record = { phase, action, http: response?.status || 0, elapsedMs: Math.max(0, Date.now() - started),
+    responseKind: body && typeof body.ok === 'boolean' ? 'application-json'
+      : type.includes('application/json') ? 'json' : type.includes('text/html') ? 'html'
+        : response ? 'other' : 'none',
+    renderOrigin: response?.headers.get('x-render-origin-server') === 'Render' };
+  if (typeof body?.rulesComplete === 'boolean') record.rulesComplete = body.rulesComplete;
+  if (body?.error) record.applicationError = true;
+  if (body?.failure) record.failureStage = stages.has(body.failure.stage) ? body.failure.stage : 'unknown';
+  if (error) record.networkError = ['AbortError', 'TimeoutError', 'TypeError'].includes(error.name) ? error.name : 'Error';
+  console.info('[scheduler-origin]', JSON.stringify(record));
+}
 // Render may answer at its edge while the free instance is still asleep. Probe
 // the read-only readiness route before sending any business operation. The ten
 // second bound fits inside the queue's existing fifteen second lease margin.
-async function waitForOrigin(env, attempt) {
+async function waitForOrigin(env, attempt, action) {
   const origin = new URL(env.ORIGIN);
   if (!origin.hostname.endsWith('.onrender.com')) return null;
   let status = 0;
+  const started = Date.now();
   try {
     const response = await fetch(new URL('/healthz', origin), {
       redirect: 'manual', signal: AbortSignal.timeout(10_000),
     });
     status = response.status;
     const body = await response.json().catch(() => null);
+    logOrigin('readiness', action, started, response, body);
     if (status === 200 && body?.ok === true) return null;
-  } catch { /* A readiness read is safe to retry; no task operation was sent. */ }
+  } catch (error) {
+    logOrigin('readiness', action, started, undefined, undefined, error);
+    /* A readiness read is safe to retry; no task operation was sent. */
+  }
   return (attempt.warmups || 0) < 12
     ? { outcome: 'retry', counter: 'warmups', delay: 30_000, http: status }
     : { outcome: 'failed', reason: 'origin-not-ready', http: status };
@@ -65,19 +85,22 @@ export async function callAction(action, env, attempt) {
   const backup = action === 'monthly-backup';
   const secret = backup ? env.BACKUP_RUN_SECRET : env.SCHEDULER_RUN_SECRET;
   if (!secret) return { outcome: 'failed', reason: 'missing-run-secret', http: 0 };
-  const readiness = await waitForOrigin(env, attempt);
+  const readiness = await waitForOrigin(env, attempt, action);
   if (readiness) return readiness;
   const url = new URL(backup ? '/api/sync-monthly-backup' : '/api/ticktick-trips', env.ORIGIN);
   if (!backup) {
     url.searchParams.set('scheduler', '1');
     if (action !== 'full') url.searchParams.set('action', action);
   }
+  const started = Date.now();
   try {
     const response = await fetch(url, { headers: { Authorization: `Bearer ${secret}` },
       redirect: 'manual', signal: AbortSignal.timeout(actionTimeout(action)) });
     const body = await response.json().catch(() => null);
+    logOrigin('business', action, started, response, body);
     return classify(action, response.status, body, attempt);
-  } catch {
+  } catch (error) {
+    logOrigin('business', action, started, undefined, undefined, error);
     // Only the idempotent archive is safe without a response. Never replay uncertain writes.
     return action === 'life-periods' ? classify(action, 0, null, attempt)
       : { outcome: 'failed', reason: 'response-unknown', http: 0 };
