@@ -92,16 +92,26 @@ export async function refreshDailyHistory(api: TickTickApi, tasks: TickTickTask[
   }));
   const rows = (await Promise.all(windows.map(({ from, until }) => collectCompleted(api, projectIds, from, until, deadline)))).flat();
   const records = new Map<string, TickTickTask>();
+  const sourceById = new Map(tasks.map(task => [identity(task), task]));
+  const sourceByFamily = new Map<string, TickTickTask | undefined>();
+  for (const task of tasks) {
+    const family = routineOccurrenceKey(task);
+    sourceByFamily.set(family, sourceByFamily.has(family) ? undefined : task);
+  }
   for (const task of [...state.history, ...rows]) {
     if ((task.status ?? 2) !== 2) continue;
     if (!task.id || !task.projectId || !task.title || !task.completedTime || !Number.isFinite(Date.parse(task.completedTime))) {
       throw new Error('TickTick 完成记录无效，未调整每日安排');
     }
     if (Date.parse(task.completedTime) > now.getTime()) continue;
-    const { id, projectId, parentId, title, content, desc, completedTime, priority, tags, isAllDay, startDate, dueDate } = task;
+    const { id, projectId, parentId, title, content, desc, completedTime, priority, tags, isAllDay, startDate, dueDate, repeatFlag, repeatFrom, timeZone, reminders } = task;
     const key = JSON.stringify([projectId, id, completedTime]), previous = records.get(key);
+    const source = sourceById.get(identity(task)) ?? sourceByFamily.get(routineOccurrenceKey(task));
     records.set(key, { id, projectId, parentId, title, content: content ?? previous?.content, desc: desc ?? previous?.desc,
-      completedTime, priority, tags, isAllDay, startDate, dueDate, status: 2 });
+      completedTime, priority: priority ?? previous?.priority ?? source?.priority, tags: tags ?? previous?.tags ?? source?.tags,
+      isAllDay: isAllDay ?? previous?.isAllDay, startDate: startDate ?? previous?.startDate, dueDate: dueDate ?? previous?.dueDate, status: 2,
+      repeatFlag: repeatFlag ?? previous?.repeatFlag ?? source?.repeatFlag, repeatFrom: repeatFrom ?? previous?.repeatFrom ?? source?.repeatFrom,
+      timeZone: timeZone ?? previous?.timeZone ?? source?.timeZone, reminders: reminders ?? previous?.reminders ?? source?.reminders });
   }
   // Retain every recent occurrence for capacity learning, and the last completion
   // of each task ID and recurring series even after it leaves the provider window.

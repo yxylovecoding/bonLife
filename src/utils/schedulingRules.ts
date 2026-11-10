@@ -32,11 +32,11 @@ export const SCHEDULING_RULES = [
   ['trips', '出行模板', '按行程日期生成准备阶段与后代；保留已生成阶段的手动日期。', 'generation'],
   ['wishes', '心愿准备', '独立心愿按截止日前七个自然月生成准备阶段及后代。', 'generation'],
   ['period-reminder', '月经提醒', '预计开始前两天提醒，同一周期已完成后不重复补建。', 'generation'],
-  ['vehicle-pickup', '充电次日接车', '根据充电最终日期生成或调整次日 07:20–07:40 接电动车待办。', 'generation'],
+  ['vehicle-pickup', '充电次日接车', '充电固定一小时，接车优先调整原待办；缺少时补齐当天、活标签的待办。', 'generation'],
   ['outlook-laundry', 'Outlook 洗衣', '跟随最终洗衣日期，预约 50 分钟；同日手动改时保留，缺失时查重恢复。', 'outlook'],
-  ['outlook-charging', 'Outlook 充电', '跟随电动车充电待办日期，预约 60 分钟；全天任务默认 20:00。', 'outlook'],
+  ['outlook-charging', 'Outlook 充电', '与电动车充电待办的开始、结束时间一致。', 'outlook'],
   ['outlook-hair', 'Outlook 洗头', '跟随洗头待办日期，默认 22:00–22:30；同日手动改时保留。', 'outlook'],
-  ['outlook-pickup', 'Outlook 接车', '跟随已确认的接电动车待办，预约 07:20–07:40。', 'outlook'],
+  ['outlook-pickup', 'Outlook 接车', '与接电动车待办的开始、结束时间一致。', 'outlook'],
 ] as const;
 
 export type SchedulingRuleId = typeof SCHEDULING_RULES[number][0];

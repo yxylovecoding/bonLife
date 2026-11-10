@@ -316,10 +316,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           draft.saveAfterCommit(id, () => kv.set('ticktick:trip-sync:v1', draft.resolveIds(tripSync, true)));
         });
         plan('period-reminder', async branch => { if (periodError) throw new Error('经期来源暂不可用'); await syncPeriodPredictionTask(branch.api, { connection, tasks: draft.values(), completedTasks: state.history, today }); });
-        plan('vehicle-pickup', async branch => {
-          await syncElectricVehiclePickup(branch.api, { tasks: draft.values(), history: state.history, excludedTaskIds: excluded, ticktickConnectionId: connectionId, today, mode: 'tasks' });
-          branch.claimDates(draft.values().filter(task => pending(task) && task.title === '接电动车' && task.content?.includes('BonBills charging pickup: ')).map(task => task.id));
-        });
+        plan('vehicle-pickup', async () => {});
       }
       if (!sleeping && (options.scope === 'full' || options.specialty === 'swimming' || ['night', 'all'].includes(options.visibilityKind ?? ''))) {
         if (!options.specialty) for (const id of (options.scope === 'full' ? ['exercise', 'exercise-rollover'] : ['exercise-rollover']) as SchedulingRuleId[]) plan(id, async branch => {
@@ -360,7 +357,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         const candidates = draft.values().filter(pending);
         const applies = (task: TickTickTask) => id === 'exercise' || id === 'exercise-rollover' || id === 'swimming' ? isExerciseTask(task)
           : id === 'eye-drops' ? isEyeDrops(task)
-          : id === 'vehicle-pickup' ? task.title === '接电动车'
+          : id === 'vehicle-pickup' ? isElectricVehiclePickup(task) || task.title === '电动车充电'
           : id === 'moving-date' || id === 'template-content' ? Boolean(task.parentId) || task.title.includes('搬家-')
           : id.startsWith('laundry') ? isLaundryTask(task) : id === 'hair-follow' ? followsHairWash(task)
           : id === 'always-today' ? (task.tags ?? []).includes('always-today')
@@ -437,6 +434,26 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           }
         }
       }
+      // Vehicle duration and pickup consume the final charging date. Refinement
+      // preserves that date and keeps its source rule as a write dependency.
+      const vehicleResult = run.results.find(r => r.id === 'vehicle-pickup');
+      if (vehicleResult && handlers['vehicle-pickup'] && allowed('vehicle-pickup')) {
+        const vehicles = draft.values().filter(t => pending(t) && (isElectricVehiclePickup(t) || t.title === '电动车充电'));
+        draft.requireRule('vehicle-pickup', vehicles.map(t => t.id));
+        const branch = draft.branch('vehicle-pickup', new Set(config.order.filter(allowed)));
+        try {
+          if (!visibility.locations) throw new Error('地点读取失败，保留当前排期');
+          if (vehicles.some(t => draft.dateOwner(t.id) && !allowed(draft.dateOwner(t.id)!))) throw new Error('充电日期未确认');
+          await syncElectricVehiclePickup(branch.api, { tasks: draft.values(), history: state.history,
+            excludedTaskIds: new Set([...excluded, ...abandonedToday]), ticktickConnectionId: connectionId, today, now, calendarState, mode: 'tasks',
+            canCreate: async task => !(await readAbandonedTodayTaskIds(api,
+              [{ ...task, status: 0, completedTime: undefined, repeatFlag: task.repeatFlag || 'RRULE:FREQ=DAILY' }], today, now)).has(task.id),
+          });
+          Object.assign(vehicleResult, branch.accept());
+        } catch (error) {
+          branch.reject(); vehicleResult.status = 'failed'; vehicleResult.reason = schedulingRuleFailureReason(error); propagate();
+        }
+      }
       for (const id of visibilityRules) if (run.results.find(r => r.id === id)?.status === 'success') {
         for (const taskId of Object.keys(visibilityOwners)) if (visibilityOwners[taskId] === id) delete visibilityOwners[taskId];
       }
@@ -501,7 +518,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             if (!outlookPending.includes(id) || !allowed(id)) return;
             const result = run.results.find(r => r.id === id)!;
             const relevant = draft.values().filter(t => pending(t) && !excluded.has(t.id) && (id === 'outlook-laundry' ? isLaundryTask(t)
-              : t.title.normalize('NFKC').trim() === (id === 'outlook-hair' ? '洗头' : id === 'outlook-pickup' ? '接电动车' : '电动车充电')));
+              : id === 'outlook-pickup' ? isElectricVehiclePickup(t) : t.title.normalize('NFKC').trim() === (id === 'outlook-hair' ? '洗头' : '电动车充电')));
             if (relevant.some(t => !draft.datesConfirmed(t.id))) {
               result.status = 'skipped'; result.reason = '待办最终日期尚未确认，请将相应日期规则设为前序'; propagate(); return;
             }

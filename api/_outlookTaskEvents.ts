@@ -23,6 +23,7 @@ export interface TaskEventOptions {
 }
 export interface EventSpec {
   subject: string; propertyId: string; statePrefix: string;
+  timeSource?: 'task';
   mergedTasks?: (task: TickTickTask) => Pick<TickTickTask, 'projectId' | 'id'>[];
   cycle: (task: TickTickTask) => string | null;
   plan: (task: TickTickTask) => { subject: string; start: EventTime; end: EventTime; location?: { displayName: string } } | null;
@@ -122,7 +123,8 @@ async function syncEvents(request: GraphClient, connection: WriteConnection, api
     const key = digest(`${options.ticktickConnectionId}:${task.projectId}:${task.id}:${cycle}`);
     const entry = state.entries[key] ??= { transactionId: key };
     const mergedTasks = spec.mergedTasks?.(task) ?? [];
-    const fingerprint = digest(JSON.stringify(mergedTasks.length ? { plan, mergedTasks } : plan));
+    const fingerprint = digest(JSON.stringify(spec.timeSource === 'task' ? { plan, mergedTasks, timeSource: 'task' }
+      : mergedTasks.length ? { plan, mergedTasks } : plan));
     let event: CalendarEvent | undefined;
     // Only the corresponding task's effective plan/cycle can trigger another
     // Outlook call. Midnight, the appointment date and time elapsed do not.
@@ -168,9 +170,8 @@ async function syncEvents(request: GraphClient, connection: WriteConnection, api
     // Recheck task completion/date/content immediately before calendar writes.
     const fresh = await api.getTask(task.projectId, task.id);
     if (spec.cycle(fresh) !== cycle || JSON.stringify(spec.plan(fresh)) !== JSON.stringify(plan)) continue;
-    // A same-day time change in Outlook takes precedence over the default task time.
-    // Date changes still follow the pending task; the calendar duration stays fixed.
-    const desired = desiredPlan(event, plan);
+    // Vehicles follow exact task times; other schedules retain manual same-day times.
+    const desired = spec.timeSource === 'task' ? plan : desiredPlan(event, plan);
     let changed = false;
     await keepLease();
     if (!event) {

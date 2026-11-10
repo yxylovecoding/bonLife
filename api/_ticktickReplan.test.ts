@@ -629,8 +629,10 @@ describe('远端新增专项接入同一裁决', () => {
     const result=await runRuleReplan({scope:'full'});
     expect(status(result,'vehicle-pickup').status).toBe('success'); expect(status(result,'outlook-pickup').status).toBe('success');
     const pickup=m.tasks.find(task=>task.title==='接电动车')!;
-    expect(pickup).toMatchObject({startDate:'2026-11-04T07:20:00+0800',dueDate:'2026-11-04T07:40:00+0800',tags:['当天','hidden']});
+    expect(pickup).toMatchObject({startDate:'2026-11-04T07:20:00+0800',dueDate:'2026-11-04T07:40:00+0800',tags:['当天','活','hidden']});
     expect(m.tasks.find(task=>task.id==='charge')?.tags).toContain('当天');
+    expect(m.tasks.find(task=>task.id==='charge')).toMatchObject({ isAllDay: false,
+      startDate: '2026-11-03T20:00:00+0800', dueDate: '2026-11-03T21:00:00+0800' });
     expect(m.write.mock.calls.filter(([id])=>id==='charge')).toHaveLength(1);
     expect(m.pickupOutlook).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({tasks:[expect.objectContaining({id:pickup.id,dueDate:pickup.dueDate})]}),expect.anything());
     expect(JSON.stringify(m.pickupOutlook.mock.calls)).not.toContain('draft-');
@@ -643,12 +645,23 @@ describe('远端新增专项接入同一裁决', () => {
   it('接车保留场景标签但日期仍跟随充电次日', async () => {
     m.tasks = [task('charge', { title: '电动车充电', priority: 5 }), task('pickup', {
       title: '接电动车', priority: 5, tags: ['居', '北京'], isAllDay: false,
-      content: '(20m)\nBonBills charging pickup: life/charge/initial',
+      content: '原有接车', repeatFlag: 'RRULE:FREQ=DAILY;INTERVAL=6', reminders: ['TRIGGER:PT0S'],
       startDate: '2026-11-03T07:20:00+0800', dueDate: '2026-11-03T07:40:00+0800',
     })];
     const result = await runRuleReplan({ scope: 'full' });
     expect(status(result, 'vehicle-pickup').status).toBe('success');
     expect(m.tasks.find(t => t.id === 'pickup')).toMatchObject({ startDate: '2026-11-04T07:20:00+0800', tags: ['居', '北京', '当天'] });
+    expect(m.tasks.filter(t => t.title === '接电动车')).toHaveLength(1);
+  });
+  it.each(['电动车充电', '接电动车'])('当天放弃且已无待办的 %s 不重新补建', async title => {
+    const charging = task('charge', { title: '电动车充电', priority: 5, repeatFlag: 'RRULE:FREQ=DAILY;INTERVAL=6' });
+    m.tasks = title === '接电动车' ? [charging] : [];
+    m.history = [{ ...charging, id: 'completed-charge', status: 2, completedTime: '2026-10-26T12:00:00Z' }];
+    m.abandoned = [task('abandoned', { title, status: -1, completedTime: `${day}T10:00:00+08:00` })];
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'vehicle-pickup').status).toBe('success');
+    expect(m.tasks.some(t => t.title === title)).toBe(false);
+    expect(m.create).not.toHaveBeenCalled();
   });
 });
 

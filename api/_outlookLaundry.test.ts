@@ -29,7 +29,7 @@ function cycle(completion = '2026-10-05T03:56:00Z') {
 }
 beforeEach(() => {
   vi.stubEnv('SYNC_SECRET', 'test'); data.clear(); events = new Map(); writes = []; loseCreateResponse = false; rejectPatch = false;
-  task = { id: 'wash', projectId: 'life', title: '洗衣服', status: 0, startDate: '2026-10-08T00:00:00Z', dueDate: '2026-10-08T00:00:00Z',
+  task = { id: 'wash', projectId: 'life', title: '洗衣服', status: 0, startDate: '2026-10-08T00:00:00Z', dueDate: '2026-10-08T01:00:00Z',
     isAllDay: false, timeZone: 'Asia/Shanghai', repeatFlag: 'RRULE:FREQ=DAILY;INTERVAL=5', content: '（1h1m）' };
   vi.mocked(api.getTask).mockReset().mockImplementation(async () => structuredClone(task)); cycle();
   data.set(OUTLOOK_WRITE_KEY, { id: 'outlook', clientId: 'app', calendarId: 'calendar', calendarName: '日历',
@@ -247,6 +247,9 @@ it.each(['microsoft', 'make'].flatMap(provider => ['洗衣服', '电动车充电
 ('$provider $title 连续32天每天四轮，首次成功后无变化零调用', async ({ provider, title }) => {
   task = { ...task, title, isAllDay: true, startDate: '2026-11-20T00:00:00+08:00', dueDate: '2026-11-20T00:00:00+08:00',
     ...(title === '接电动车' ? { content: 'BonBills charging pickup: life/charge/initial' } : {}) };
+  if (title === '电动车充电' || title === '接电动车') Object.assign(task, {
+    isAllDay: false, startDate: '2026-11-20T20:00:00+08:00', dueDate: `2026-11-20T${title === '电动车充电' ? '21:00' : '20:20'}:00+08:00`,
+  });
   const fetcher = provider === 'make' ? makeRelay() : vi.mocked(globalThis.fetch);
   for (let day = 0; day < 32; day++) {
     const today = new Date(Date.parse('2026-10-05T00:00:00Z') + day * 86400000).toISOString().slice(0, 10);
@@ -363,14 +366,14 @@ it('充电待办改期不触发洗衣、洗头的 Outlook 调用', async () => {
   };
   await sync(); expect(relay).toHaveBeenCalledTimes(9);
   const laundry = structuredClone(events.get('event-1')), hairEvent = structuredClone(events.get('event-3'));
-  charging.startDate = charging.dueDate = '2026-10-10T00:00:00Z';
+  charging.startDate = '2026-10-10T00:00:00Z'; charging.dueDate = '2026-10-10T01:00:00Z';
   await sync(); expect(relay).toHaveBeenCalledTimes(12);
   expect(events.get('event-1')).toEqual(laundry); expect(events.get('event-3')).toEqual(hairEvent);
   expect(events.get('event-2').start.dateTime).toBe('2026-10-10T08:00:00');
   await sync(); expect(relay).toHaveBeenCalledTimes(12);
 });
 
-it.each(['洗衣服', '电动车充电'])('%s 保留北京时间同日移动，并继续跟随跨日改期', async title => {
+it.each(['洗衣服', '电动车充电'])('%s 无待办变化不调用 Outlook，跨日改期同步原预约', async title => {
   task.title = title;
   const sync = () => title === '洗衣服' ? syncLaundryOutlook(api, options()) : syncChargingOutlook(api, {
     ...options(), history: [], excludedTaskIds: new Set(),
@@ -385,13 +388,14 @@ it.each(['洗衣服', '电动车充电'])('%s 保留北京时间同日移动，�
   expect(events.get('event-1').start).toEqual(event.start);
   expect(writes).toHaveLength(1);
   task.startDate = task.dueDate = '2026-10-09T00:00:00Z';
+  if (title === '电动车充电') task.dueDate = '2026-10-09T01:00:00Z';
   expect(await sync()).toMatchObject({ updated: 1, created: 0 });
   expect(events.get('event-1').start.dateTime).toBe('2026-10-09T08:00:00');
   expect(events.size).toBe(1);
 });
 
 it('充电按当前待办创建，丢失响应可恢复，完成后的下一周期保留历史日程', async () => {
-  task.title = '电动车充电'; task.isAllDay = true;
+  task.title = '电动车充电'; task.startDate = '2026-10-08T20:00:00+0800'; task.dueDate = '2026-10-08T21:00:00+0800';
   const history: TickTickTask[] = [];
   const sync = (overrides = {}) => syncChargingOutlook(api, { ...options(), history, excludedTaskIds: new Set(), ...overrides });
   expect(chargingEventPlan(task, options().today)).toMatchObject({
@@ -404,7 +408,7 @@ it('充电按当前待办创建，丢失响应可恢复，完成后的下一周�
   expect(writes).toHaveLength(1);
   expect(task).toEqual(original);
   history.push({ ...task, status: 2, completedTime: '2026-10-08T13:00:00Z' });
-  task.startDate = task.dueDate = '2026-10-13T00:00:00Z';
+  task.startDate = '2026-10-13T00:00:00Z'; task.dueDate = '2026-10-13T01:00:00Z';
   expect(await sync({ today: '2026-10-08', now: new Date('2026-10-08T14:00:00Z') })).toMatchObject({ created: 1 });
   expect(events.size).toBe(2);
   expect(events.get('event-1').start.dateTime).toBe('2026-10-08T20:00:00');
@@ -414,9 +418,26 @@ it('充电按当前待办创建，丢失响应可恢复，完成后的下一周�
   expect(events.size).toBe(2);
 });
 
+it.each(['电动车充电', '接电动车'])('%s 同日改时仍更新原 Outlook 日程，起止秒数与待办一致', async title => {
+  task.title = title;
+  task.startDate = '2026-10-08T20:00:55+0800';
+  task.dueDate = `2026-10-08T${title === '电动车充电' ? '21:00' : '20:20'}:55+0800`;
+  const sync = () => title === '电动车充电'
+    ? syncChargingOutlook(api, { ...options(), history: [], excludedTaskIds: new Set() })
+    : syncElectricVehiclePickup(api, { ...options(), history: [], excludedTaskIds: new Set(), mode: 'outlook' });
+  await sync();
+  task.startDate = '2026-10-08T22:00:55+0800';
+  task.dueDate = `2026-10-08T${title === '电动车充电' ? '23:00' : '22:20'}:55+0800`;
+  await sync();
+  expect(events.size).toBe(1);
+  expect(events.get('event-1')).toMatchObject({ start: { dateTime: '2026-10-08T22:00:55' },
+    end: { dateTime: `2026-10-08T${title === '电动车充电' ? '23:00' : '22:20'}:55` } });
+  vi.mocked(fetch).mockClear(); await sync(); expect(fetch).not.toHaveBeenCalled();
+});
+
 it('充电不处理模板后代、已完成、过去、无日期或不关我事的待办', async () => {
   task.title = '电动车充电';
-  for (const fields of [{ status: 2 }, { completedTime: '2026-10-04T01:00:00Z' },
+  for (const fields of [{ status: 2 }, { isAllDay: true },
     { startDate: undefined, dueDate: undefined }, { dueDate: '2026-10-04T00:00:00Z' },
     { tags: ['不关我事'] }, { title: '买电动车充电器' }]) {
     expect(chargingEventPlan({ ...task, ...fields }, options().today)).toBeNull();
@@ -433,7 +454,7 @@ it('充电同步成功不能清除仍失败的洗衣状态，洗衣恢复后才�
   task.startDate = task.dueDate = '2026-10-10T00:00:00Z';
   expect(await syncLaundryOutlook(api, options())).toHaveProperty('error');
   const original = structuredClone(task);
-  task = { ...task, id: 'charge', title: '电动车充电' };
+  task = { ...task, id: 'charge', title: '电动车充电', dueDate: '2026-10-10T01:00:00Z' };
   expect(await syncChargingOutlook(api, { ...options(), history: [], excludedTaskIds: new Set() })).toMatchObject({ created: 1 });
   expect(data.get(OUTLOOK_WRITE_KEY).lastError).toContain('参与人');
   task = original;
@@ -532,7 +553,7 @@ it('洗头同步失败保持独立错误，充电成功不能掩盖', async () =
   task.startDate = task.dueDate = '2026-10-10T00:00:00Z';
   expect(await sync()).toHaveProperty('error');
   const original = structuredClone(task);
-  task = { ...task, id: 'charge', title: '电动车充电' };
+  task = { ...task, id: 'charge', title: '电动车充电', dueDate: '2026-10-10T01:00:00Z' };
   expect(await syncChargingOutlook(api, { ...options(), history: [], excludedTaskIds: new Set() })).toMatchObject({ created: 1 });
   expect(data.get(OUTLOOK_WRITE_KEY).syncErrors['洗头']).toContain('参与人');
   expect(data.get(OUTLOOK_WRITE_KEY).lastError).toContain('参与人');

@@ -255,6 +255,15 @@ describe('每日待办动态安排', () => {
     expect(s.history.map((t) => t.id)).toContain('old');
     expect(s.historyThrough).toBe('2026-10-04T10:00:00.000Z');
   });
+  it('完成快照保留充电周期和地点，后续缺失字段不抹去已知配置', async () => {
+    const active = task('charge', { title: '电动车充电', tags: ['北京'], repeatFlag: 'RRULE:FREQ=DAILY;INTERVAL=6', repeatFrom: '1', timeZone: 'Asia/Shanghai', reminders: ['TRIGGER:PT0S'] });
+    const row = { ...done(active, today, 'completed-charge'), repeatFlag: undefined, repeatFrom: undefined, timeZone: undefined, reminders: undefined, tags: undefined };
+    const api = { listCompletedTasks: vi.fn().mockResolvedValue([row]) } as unknown as TickTickApi;
+    const s = state();
+    await refreshDailyHistory(api, [active], s, new Date('2026-10-04T10:00:00Z'));
+    await refreshDailyHistory(api, [], s, new Date('2026-10-04T11:00:00Z'));
+    expect(s.history[0]).toMatchObject({ id: 'completed-charge', repeatFlag: active.repeatFlag, repeatFrom: '1', tags: ['北京'], timeZone: 'Asia/Shanghai', reminders: ['TRIGGER:PT0S'] });
+  });
   it('与场景排期整合后只写最终日期，二次同步不往返改期', async () => {
     const original = task('scene', { tags: ['居'], title: '任务 15分钟', dueDate: '2026-10-05T00:00:00+0800', startDate: '2026-10-05T00:00:00+0800' });
     const api = { listProjects: async () => [], filterTasks: async () => [original], getProjectData: async () => ({ tasks: [original] }),

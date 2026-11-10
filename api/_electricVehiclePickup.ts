@@ -1,22 +1,25 @@
-import { calendarDateInTimeZone, routineOccurrenceKey, routineTaskDate, type TickTickApi, type TickTickTask } from './_ticktickTrips.js';
+import { calendarDateInTimeZone, routineOccurrenceKey, routineTaskDate, routineTaskPayload, type TickTickApi, type TickTickTask } from './_ticktickTrips.js';
 import { syncRecurringTaskOutlook, type RecurringTaskEventOptions } from './_outlookRecurringTaskEvents.js';
 import { localEventTime } from './_outlookTaskEvents.js';
+import { isPendingTickTickTask as pending } from './_ticktickTaskState.js';
+import { isChargingTask, restoreMissingChargingTask, vehicleNewTags, vehicleTaskTimes } from './_electricVehicleCharging.js';
 
-const pending = (task: TickTickTask) => (task.status ?? 0) === 0 && !task.completedTime;
 const title = '接电动车';
 const prefix = 'BonBills charging pickup: ';
 const mergedPrefix = 'BonBills pickup merged: ';
 const lines = (content?: string) => (content ?? '').split(/\r?\n|\\n/);
-export const isElectricVehicleTask = (task: TickTickTask) => ['电动车充电', title].includes(task.title.normalize('NFKC').trim());
-export const isElectricVehiclePickup = (task: TickTickTask) => task.title === title && lines(task.content).some(line => line.startsWith(prefix));
+export const isElectricVehiclePickup = (task: TickTickTask) => [title, '借电动车'].includes(task.title.normalize('NFKC').trim());
+export const isElectricVehicleTask = (task: TickTickTask) => isChargingTask(task) || isElectricVehiclePickup(task);
 const notes = (task: TickTickTask) => lines(task.content).filter(line => !line.startsWith(prefix) && !line.startsWith(mergedPrefix)).join('\n');
-const plainDuplicate = (task: TickTickTask) => pending(task) && isElectricVehiclePickup(task) && notes(task).trim() === '(20m)'
-  && !(task.tags ?? []).some(tag => !['当天', 'hidden', 'bon-hidden'].includes(tag)) && !task.reminders?.length
+const plainDuplicate = (task: TickTickTask) => pending(task) && isElectricVehiclePickup(task) && task.content?.includes(prefix) && notes(task).trim() === '(20m)'
+  && !(task.tags ?? []).some(tag => !['当天', '活', 'hidden', 'bon-hidden'].includes(tag)) && !task.reminders?.length
   && task.priority === 5 && task.isAllDay === false
   && !task.repeatFlag && !task.parentId && !task.items?.length && !task.desc;
 const dayAfter = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
 
-export async function syncElectricVehiclePickup(api: TickTickApi, options: RecurringTaskEventOptions & { mode?: 'tasks' | 'outlook' }) {
+export async function syncElectricVehiclePickup(api: TickTickApi, options: RecurringTaskEventOptions & {
+  mode?: 'tasks' | 'outlook'; calendarState?: unknown; canCreate?: (task: TickTickTask) => Promise<boolean>;
+}) {
   const excluded = (task: TickTickTask) => {
     const seen = new Set<string>();
     let current: TickTickTask | undefined = task;
@@ -26,15 +29,32 @@ export async function syncElectricVehiclePickup(api: TickTickApi, options: Recur
     }
     return false;
   };
-  const sources = options.tasks.filter(t => pending(t) && t.title.normalize('NFKC').trim() === '电动车充电'
+  const tasks = [...options.tasks];
+  let created = 0, updated = 0, deleted = 0;
+  if (options.mode !== 'outlook') {
+    const restored = await restoreMissingChargingTask(api, { ...options, tasks, excluded });
+    if (restored) { tasks.push(restored); created++; }
+    for (const candidate of tasks.filter(t => pending(t) && isChargingTask(t) && !excluded(t) && !t.tags?.includes('不关我事'))) {
+      const fresh = await api.getTask(candidate.projectId, candidate.id), times = vehicleTaskTimes(fresh, 'charging');
+      if (!pending(fresh) || !isChargingTask(fresh) || !times) continue;
+      if (fresh.isAllDay === false && Date.parse(fresh.startDate ?? '') === Date.parse(times.startDate)
+        && Date.parse(fresh.dueDate ?? '') === Date.parse(times.dueDate)) continue;
+      await api.updateTask(fresh.id, { ...fresh, ...times });
+      const verified = await api.getTask(fresh.projectId, fresh.id);
+      if (!pending(verified) || Date.parse(verified.startDate ?? '') !== Date.parse(times.startDate)
+        || Date.parse(verified.dueDate ?? '') !== Date.parse(times.dueDate)) throw new Error('充电时段保存未通过核对');
+      tasks[tasks.findIndex(t => t.id === fresh.id)] = verified; updated++;
+    }
+  }
+  const sources = tasks.filter(t => pending(t) && isChargingTask(t)
     && !excluded(t) && !t.tags?.includes('不关我事'));
   const now = options.now?.getTime() ?? Date.now();
   const completed = options.history.filter(t => !pending(t) && t.title.normalize('NFKC').trim() === '电动车充电'
     && !excluded(t) && !t.tags?.includes('不关我事') && t.completedTime && Date.parse(t.completedTime) <= now);
   const completedDay = (task: TickTickTask) => calendarDateInTimeZone(task.completedTime, 'Asia/Shanghai');
-  const recentCompleted = completed.filter(t => completedDay(t) && dayAfter(completedDay(t)!) >= options.today);
-  const tasks = [...options.tasks];
-  let created = 0, updated = 0, deleted = 0;
+  const recentCompleted = completed.filter(t => completedDay(t) && dayAfter(completedDay(t)!) >= options.today)
+    .sort((a, b) => Date.parse(b.completedTime!) - Date.parse(a.completedTime!));
+  const assigned = new Set<string>();
   for (const source of options.mode === 'outlook' ? [] : [...recentCompleted, ...sources]) {
     const historical = !pending(source);
     const fresh = historical ? source : await api.getTask(source.projectId, source.id);
@@ -56,18 +76,24 @@ export async function syncElectricVehiclePickup(api: TickTickApi, options: Recur
       return project === source.projectId && sourceIds.has(id)
         && (cycle === completion || Number.isFinite(Date.parse(cycle)) && Date.parse(cycle) === Date.parse(completion));
     });
-    const matches = tasks.filter(t => pending(t) && t.projectId === source.projectId && t.title === title && !excluded(t)
-      && (linked(t) || (!t.content?.includes(prefix) && routineTaskDate(t) === target)));
+    const available = tasks.filter(t => pending(t) && isElectricVehiclePickup(t) && !excluded(t) && !t.tags?.includes('不关我事'));
+    // One pending pickup is reused before preparing any later charging cycle.
+    if (available.some(t => assigned.has(t.id))) continue;
+    const matches = available;
     const customized = matches.filter(t => !plainDuplicate(t));
-    if (matches.length > 1 && (customized.length > 1 || matches.some(t => !linked(t)))) throw new Error('接电动车存在多个待办，请核对');
-    if (options.history.some(t => t.projectId === source.projectId && t.title === title && !pending(t)
+    if (matches.length > 1 && (customized.length > 1 || matches.some(t => plainDuplicate(t) && !linked(t)))) throw new Error('接电动车存在多个待办，请核对');
+    if (options.history.some(t => t.projectId === source.projectId && isElectricVehiclePickup(t) && !pending(t)
       && routineTaskDate(t) === target)) continue;
-    const startDate = `${target}T07:20:00+0800`, dueDate = `${target}T07:40:00+0800`;
     const keeper = customized[0] ?? matches[0];
+    if (!keeper && tasks.some(t => pending(t) && isElectricVehiclePickup(t) && excluded(t))) continue;
     const duplicates = matches.filter(t => t.id !== keeper?.id);
     const existing = keeper ? await api.getTask(keeper.projectId, keeper.id) : undefined;
-    if (existing && (!pending(existing) || existing.title !== title)) continue;
+    if (existing && (!pending(existing) || !isElectricVehiclePickup(existing))) continue;
     if (existing && keeper && linked(keeper) && !linked(existing)) throw new Error('接电动车关联已变化');
+    const shifted = existing ? { ...existing, ...routineTaskPayload(existing, target, true) } : { id: '', projectId: source.projectId, title, dueDate: `${target}T00:00:00+0800`, isAllDay: true };
+    const times = vehicleTaskTimes(shifted, 'pickup');
+    if (!times) continue;
+    const { startDate, dueDate } = times;
     const aliases = [...new Set([...lines(existing?.content).filter(line => line.startsWith(mergedPrefix)),
       ...duplicates.flatMap(t => [`${mergedPrefix}${t.projectId}/${t.id}`, ...lines(t.content).filter(line => line.startsWith(mergedPrefix))])])];
     const content = [existing ? notes(existing) : '(20m)', marker, ...aliases].join('\n');
@@ -76,17 +102,19 @@ export async function syncElectricVehiclePickup(api: TickTickApi, options: Recur
       if (Date.parse(existing.startDate ?? '') === Date.parse(startDate) && Date.parse(existing.dueDate ?? '') === Date.parse(dueDate)
         && existing.isAllDay === false && existing.content === content) saved = existing;
       else {
-        saved = await api.updateTask(existing.id, { ...existing, startDate, dueDate, isAllDay: false, timeZone: 'Asia/Shanghai', content });
+        saved = await api.updateTask(existing.id, { ...existing, startDate, dueDate, isAllDay: false, content });
         updated++;
       }
     } else {
+      if (options.canCreate && !await options.canCreate(shifted)) continue;
       saved = await api.createTask({ projectId: source.projectId, title, content, startDate, dueDate,
-        isAllDay: false, timeZone: 'Asia/Shanghai', priority: 5, tags: ['当天'], reminders: [] });
+        isAllDay: false, timeZone: 'Asia/Shanghai', priority: 5, tags: vehicleNewTags(), reminders: [] });
       created++;
     }
     const verified = await api.getTask(saved.projectId, saved.id);
-    if (verified.title !== title || !pending(verified) || Date.parse(verified.startDate ?? '') !== Date.parse(startDate)
+    if (verified.title !== (existing?.title ?? title) || !pending(verified) || Date.parse(verified.startDate ?? '') !== Date.parse(startDate)
       || Date.parse(verified.dueDate ?? '') !== Date.parse(dueDate) || verified.content !== content) throw new Error('接电动车待办保存未通过核对');
+    assigned.add(verified.id);
     const index = tasks.findIndex(t => t.id === verified.id && t.projectId === verified.projectId);
     if (index >= 0) tasks[index] = verified; else tasks.push(verified);
     for (const duplicate of duplicates) {
@@ -114,6 +142,7 @@ export async function syncElectricVehiclePickup(api: TickTickApi, options: Recur
     updated++;
   }
   const outlook = options.mode === 'tasks' ? undefined : await syncRecurringTaskOutlook(api, { ...options, tasks: tasks.filter(isElectricVehiclePickup) }, {
+    timeSource: 'task',
     subject: title, propertyId: 'String {d9d1e730-7742-4a9c-91af-bab2a9a45f69} Name BonBillsPickup',
     statePrefix: 'outlook:pickup-events:v1', cyclesKey: 'ticktick:pickup-cycles:v1',
     mergedTasks: task => lines(task.content).filter(line => line.startsWith(mergedPrefix)).map(line => {
@@ -123,8 +152,9 @@ export async function syncElectricVehiclePickup(api: TickTickApi, options: Recur
     plan: task => {
       const date = routineTaskDate(task);
       if (!pending(task) || task.tags?.includes('不关我事') || !date || date < options.today || excluded(task)) return null;
-      const start = Date.parse(`${date}T07:20:00+08:00`);
-      return { subject: title, start: localEventTime(start), end: localEventTime(start + 20 * 60000) };
+      const start = Date.parse(task.startDate ?? ''), end = Date.parse(task.dueDate ?? '');
+      if (task.isAllDay !== false || !Number.isFinite(start) || !(end > start)) return null;
+      return { subject: title, start: localEventTime(start), end: localEventTime(end) };
     },
   });
   return { created, updated, deleted, outlook };
