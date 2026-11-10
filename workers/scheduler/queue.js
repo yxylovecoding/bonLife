@@ -2,7 +2,7 @@ import { automaticRestWindow } from '../../src/utils/schedulerTime.ts';
 import { actionTimeout, callAction } from './result.js';
 import { day } from './schedule.js';
 const pending = job => job.status === 'queued' || job.status === 'running';
-const freshAttempt = () => ({ busy: 0, retries: 0, batches: 0 });
+const freshAttempt = () => ({ busy: 0, retries: 0, batches: 0, warmups: 0 });
 // SQLite-backed Durable Object. Every transition is stored before the next HTTP request.
 // One alarm performs one bounded backend call, so a multi-step job can exceed 15 minutes.
 export class SchedulerQueue {
@@ -80,7 +80,7 @@ export class SchedulerQueue {
         if (!job || job.inFlightUntil !== claimed.inFlightUntil) return;
         delete job.inFlightUntil;
         if (result.outcome === 'retry' && (result.counter !== 'batches' || job.attempt.batches < 39)) {
-          job.attempt[result.counter]++;
+          job.attempt[result.counter] = (job.attempt[result.counter] || 0) + 1;
           job.nextAt = Date.now() + result.delay;
         } else {
           const final = result.outcome === 'retry' ? { outcome: 'failed', reason: 'batch-limit' } : result;

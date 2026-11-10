@@ -2,6 +2,25 @@ const readStages = new Set(['outlook-refresh', 'tasks-read', 'completion-history
 const skipReasons = new Set(['rest-window', 'sleep-window', 'restore-pending', 'disconnected']);
 export const actionTimeout = action => action === 'full' || action === 'hourly-replan' ? 320_000
   : action === 'life-periods' ? 80_000 : 150_000;
+// Render may answer at its edge while the free instance is still asleep. Probe
+// the read-only readiness route before sending any business operation. The ten
+// second bound fits inside the queue's existing fifteen second lease margin.
+async function waitForOrigin(env, attempt) {
+  const origin = new URL(env.ORIGIN);
+  if (!origin.hostname.endsWith('.onrender.com')) return null;
+  let status = 0;
+  try {
+    const response = await fetch(new URL('/healthz', origin), {
+      redirect: 'manual', signal: AbortSignal.timeout(10_000),
+    });
+    status = response.status;
+    const body = await response.json().catch(() => null);
+    if (status === 200 && body?.ok === true) return null;
+  } catch { /* A readiness read is safe to retry; no task operation was sent. */ }
+  return (attempt.warmups || 0) < 12
+    ? { outcome: 'retry', counter: 'warmups', delay: 30_000, http: status }
+    : { outcome: 'failed', reason: 'origin-not-ready', http: status };
+}
 // Persist only fixed categories, never provider errors, private records or response bodies.
 export function classify(action, status, body, attempt) {
   const fail = reason => ({ outcome: 'failed', reason, http: status });
@@ -46,6 +65,8 @@ export async function callAction(action, env, attempt) {
   const backup = action === 'monthly-backup';
   const secret = backup ? env.BACKUP_RUN_SECRET : env.SCHEDULER_RUN_SECRET;
   if (!secret) return { outcome: 'failed', reason: 'missing-run-secret', http: 0 };
+  const readiness = await waitForOrigin(env, attempt);
+  if (readiness) return readiness;
   const url = new URL(backup ? '/api/sync-monthly-backup' : '/api/ticktick-trips', env.ORIGIN);
   if (!backup) {
     url.searchParams.set('scheduler', '1');

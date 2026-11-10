@@ -30,6 +30,39 @@ describe('cloud schedule', () => {
   });
 });
 describe('response and retry boundary', () => {
+  it('waits through Render cold-start failures before sending one business request', async () => {
+    const env = { ORIGIN: 'https://bonbills.onrender.com', SCHEDULER_RUN_SECRET: 'PRIVATE' };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('Bad Gateway', { status: 502 }))
+      .mockRejectedValueOnce(new Error('read timeout'))
+      .mockResolvedValueOnce(Response.json({ ok: true }))
+      .mockResolvedValueOnce(good());
+    vi.stubGlobal('fetch', fetcher);
+    expect(await callAction('hourly-replan', env, attempt)).toMatchObject({ outcome: 'retry', counter: 'warmups', http: 502 });
+    expect(await callAction('hourly-replan', env, { ...attempt, warmups: 1 })).toMatchObject({ outcome: 'retry', counter: 'warmups', http: 0 });
+    expect(await callAction('hourly-replan', env, { ...attempt, warmups: 2 })).toEqual({ outcome: 'success' });
+    expect(fetcher.mock.calls.slice(0, 3).map(([url]) => new URL(String(url)).pathname)).toEqual(['/healthz', '/healthz', '/healthz']);
+    for (const [, options] of fetcher.mock.calls.slice(0, 3)) {
+      expect(options.headers).toBeUndefined(); expect(options.redirect).toBe('manual');
+    }
+    expect(new URL(String(fetcher.mock.calls[3][0])).searchParams.get('action')).toBe('hourly-replan');
+    expect(fetcher.mock.calls[3][1].headers.Authorization).toBe('Bearer PRIVATE');
+  });
+  it('bounds readiness retries and rejects a loading page without running a task', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('<html>loading</html>', { status: 200 }));
+    vi.stubGlobal('fetch', fetcher);
+    expect(await callAction('full', { ORIGIN: 'https://bonbills.onrender.com', SCHEDULER_RUN_SECRET: 'secret' },
+      { ...attempt, warmups: 12 })).toEqual({ outcome: 'failed', reason: 'origin-not-ready', http: 200 });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('does not retry uncertain business writes after readiness succeeds', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ ok: true }))
+      .mockRejectedValueOnce(new Error('write response lost'));
+    vi.stubGlobal('fetch', fetcher);
+    expect(await callAction('full', { ORIGIN: 'https://bonbills.onrender.com', SCHEDULER_RUN_SECRET: 'secret' }, attempt))
+      .toEqual({ outcome: 'failed', reason: 'response-unknown', http: 0 });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
   it('runs monthly backup only at Shanghai month start with the explicit flag', () => {
     const due = Date.parse('2026-12-01T00:10:00Z');
     expect(scheduledJobs(due)).toEqual([]);
@@ -125,6 +158,17 @@ function fixture() {
   return { ctx, env, queue, enqueue, tick, state: () => ctx.storage.get('state') };
 }
 describe('durable serial execution', () => {
+  it('persists readiness retries across alarms without replaying the business action', async () => {
+    const f = fixture(); f.env.ORIGIN = 'https://bonbills.onrender.com';
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response('Bad Gateway', { status: 502 }))
+      .mockResolvedValueOnce(Response.json({ ok: true })).mockResolvedValueOnce(good());
+    vi.stubGlobal('fetch', fetcher);
+    await f.enqueue([manualJob('hourly', 'wake', Date.now())]); await f.tick();
+    expect((await f.state()).jobs[0]).toMatchObject({ status: 'running', index: 0, attempt: { warmups: 1 } });
+    await f.tick(new SchedulerQueue(f.ctx, f.env));
+    expect((await f.state()).jobs[0].status).toBe('success');
+    expect(fetcher.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/api/ticktick-trips')).toHaveLength(1);
+  });
   it.each(['hourly', 'full', 'night', 'midnight', 'morning'])('skips delayed %s work that reaches the queue during the Shanghai rest window', async kind => {
     vi.setSystemTime(new Date('2026-10-24T16:01:00Z'));
     const f = fixture(); vi.stubGlobal('fetch', vi.fn());

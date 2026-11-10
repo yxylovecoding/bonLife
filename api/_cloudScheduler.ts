@@ -34,7 +34,7 @@ export async function readCloudSchedulerStatus() {
   const statuses = new Set(['queued', 'running', 'success', 'failed', 'skipped']);
   const reasons = new Set(['interrupted-response-unknown', 'rest-window', 'expired', 'batch-limit',
     'backup-incomplete', 'period-import', 'busy', 'incomplete', 'rules-incomplete', 'plan-incomplete',
-    'visibility-incomplete', 'email-cancelled', 'missing-run-secret', 'response-unknown']);
+    'visibility-incomplete', 'email-cancelled', 'missing-run-secret', 'response-unknown', 'origin-not-ready']);
   const time = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
   return { lastCronAt: time(result.lastCronAt), jobs: result.jobs.slice(-200).map((job: any) => ({
     kind: ['full', 'hourly', 'night', 'midnight', 'monthly-backup'].includes(job.kind) ? job.kind : 'other',
@@ -44,6 +44,7 @@ export async function readCloudSchedulerStatus() {
     reason: reasons.has(job.reason) ? job.reason : undefined,
     steps: Array.isArray(job.steps) ? job.steps.filter((step: unknown) => actions.has(step as string)) : [],
     index: Number.isInteger(job.index) ? job.index : null,
+    warmups: Number.isInteger(job.attempt?.warmups) ? job.attempt.warmups : 0,
     results: Array.isArray(job.results) ? job.results.map((item: any) => ({
       action: actions.has(item.action) ? item.action : 'unknown',
       outcome: statuses.has(item.outcome) ? item.outcome : 'unknown',
