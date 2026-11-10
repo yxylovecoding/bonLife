@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setImmediate } from 'node:timers';
 import { defaultRuleConfig, readRuleConfig, updateRuleGroups, removeSchedulingRule } from '../src/utils/schedulingRules';
-import { executeRuleGraph, saveSchedulingRules, RULE_CONFIG_KEY } from './_schedulingRules';
+import { executeRuleGraph, saveSchedulingRules, schedulingRuleFailureReason, RULE_CONFIG_KEY } from './_schedulingRules';
 import { RuleTaskDraft } from './_ruleTaskDraft';
 import { locationTaskHidden, visibilityDecision } from './_taskVisibilityRules';
 import type { TickTickApi, TickTickTask } from './_ticktickTrips';
@@ -13,6 +13,13 @@ vi.mock('./_accountKv.js', () => ({ kv: {
   eval: async (_script: string, [key]: string[]) => { data.delete(key); return 1; },
 } }));
 beforeEach(() => data.clear());
+
+it('规则诊断区分快照缺失及读取错误，不泄露上游正文和模板标题', () => {
+  expect(schedulingRuleFailureReason(new Error('待办快照中不存在该任务'))).toContain('不在本轮快照');
+  expect(schedulingRuleFailureReason(new Error('TickTick 500: PRIVATE response'))).toBe('TickTick 读取失败（HTTP 500），已保留原安排');
+  expect(schedulingRuleFailureReason(new Error('无法识别模板阶段“PRIVATE”'))).toBe('模板阶段日期无法识别，已保留原安排');
+  expect(schedulingRuleFailureReason(new Error('PRIVATE unknown'))).not.toContain('PRIVATE');
+});
 
 it('两个计算规则之间让出事件循环，待处理的健康检查有机会执行', async () => {
   const order: string[] = [];

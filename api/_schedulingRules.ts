@@ -42,6 +42,11 @@ export async function saveSchedulingRules(value: unknown) {
 }
 
 export function schedulingRuleFailureReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  if (message === '待办快照中不存在该任务') return '已关联待办不在本轮快照中，已保留原安排';
+  const status = message.match(/^TickTick (\d{3})\b/)?.[1];
+  if (status) return `TickTick 读取失败（HTTP ${status}），已保留原安排`;
+  if (message.startsWith('无法识别模板阶段') || message.includes('需要按整天设置')) return '模板阶段日期无法识别，已保留原安排';
   return error instanceof Error && /^(排期来源暂不可用|地点读取失败，保留当前显隐|模板范围未确认|模板暂不可用|经期来源暂不可用|存在多个洗头来源|数据未刷新|来源未确认|Outlook 订阅读取失败|眼药水重复规则不支持安全跳过，保留原任务|眼药水下一次日期无法确认，保留原任务|眼药水待办已变化，停止跳过|眼药水跳过结果未确认)$/.test(error.message) ? error.message : '本规则未完成，已保留受影响安排';
 }
 
@@ -72,6 +77,7 @@ export async function executeRuleGraph(config: SchedulingRuleConfig, scope: Sche
         run.results.push({ id, status: 'success', matched: 0, updated: 0, ...result });
       } catch (error) {
         unavailable.add(id);
+        console.warn('[scheduling-rule-failure]', JSON.stringify({ id, reason: schedulingRuleFailureReason(error) }));
         await options.afterRule?.(id, false);
         run.results.push({ id, status: 'failed', matched: 0, updated: 0, reason: schedulingRuleFailureReason(error) });
       } finally { console.info('[scheduling-rule]', JSON.stringify({ id, phase: 'end', scope, elapsedMs: Date.now() - started })); }
