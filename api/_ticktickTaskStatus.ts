@@ -1,6 +1,7 @@
 import { collectCompleted } from './_ticktickCompleted.js';
 import { readAbandonedTodayTaskIds } from './_ticktickAbandoned.js';
 import { nextTaskLocationDate } from './_ticktickLocation.js';
+import { readTickTickLocationTags } from './_ticktickLocationTags.js';
 import { calendarDateInTimeZone, isAlwaysTodayTask, matchCompletedOccurrences,
   readAllTickTickTasks, type TickTickApi, type TickTickTask } from './_ticktickTrips.js';
 
@@ -15,7 +16,9 @@ function dateFields(task: TickTickTask) {
 
 export async function inspectTickTickTaskDate(api: TickTickApi, title: string, calendarState: unknown, now = new Date()) {
   const today = calendarDateInTimeZone(now.toISOString(), 'Asia/Shanghai')!;
-  const tasks = await readAllTickTickTasks(api, [0]);
+  const [tasks, locationTags] = await Promise.all([readAllTickTickTasks(api, [0]),
+    (calendarState as { locationTags?: string[] } | null)?.locationTags ?? readTickTickLocationTags(api)]);
+  if (locationTags !== undefined) calendarState = { ...(calendarState as Record<string, unknown> ?? {}), locationTags };
   const matches = tasks.filter(task => task.title.normalize('NFKC').trim() === title.normalize('NFKC').trim());
   if (matches.length > 10) throw new Error('同名任务过多，无法核对');
   if (!matches.length) return { today, tasks: [] };

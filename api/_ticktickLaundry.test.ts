@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chooseLaundryDay, isLaundryTask, laundryAnchor, laundryBeforeTrip, laundryLocation, readLaundryForecast, syncLaundrySchedule,
   LAUNDRY_STATE_KEY, type LaundryForecast, type LaundryState, type LaundryWeather } from './_ticktickLaundry';
 import { buildTripSourcesFromSyncState, type TickTickApi, type TickTickTask } from './_ticktickTrips';
+import { BEIJING, GUANGZHOU } from '../src/utils/internship';
 const { data, upstream } = vi.hoisted(() => ({ data: new Map<string, any>(), upstream: vi.fn() }));
 vi.mock('@vercel/kv', () => ({ kv: { get: async (key: string) => structuredClone(data.get(key) ?? null),
   hgetall: async (key: string) => structuredClone(data.get(key) ?? null),
@@ -104,6 +105,16 @@ describe('洗衣周期和地点', () => {
 });
 
 describe('天气与日程选日', () => {
+  it.each([{ tags: ['北京'] }, { tags: ['居', '北京'] }])('天气和空档合适也必须符合城市地点规则：$tags', ({ tags }) => {
+    const current = task({ tags });
+    const calendarState = { locationTags: ['居', '北京', '广州'],
+      tagMap: Object.fromEntries(dates.map(date => [date, 'school'])),
+      cityMap: Object.fromEntries(dates.map(date => [date, date === '2026-10-12' ? BEIJING : GUANGZHOU])) };
+    expect(chooseLaundryDay(current, '2026-10-10', options({ calendarState }), () => forecast(sunny))).toBe('2026-10-12');
+    expect(chooseLaundryDay(current, '2026-10-10', options({ calendarState: {
+      ...calendarState, cityMap: Object.fromEntries(dates.map(date => [date, GUANGZHOU])),
+    } }), () => forecast(sunny))).toBeNull();
+  });
   it('待办标注15分钟时仍按50分钟避让后半段会议，恰好08:50开始则不冲突', () => {
     const current = task({ content: '(15m)' });
     const event = { title: '会议', start: '2026-10-10T08:30:00+08:00', end: '2026-10-10T09:00:00+08:00' };
@@ -357,6 +368,22 @@ describe('出行前洗衣', () => {
     for (const day of travelDays) o.calendarState.tagMap[day] = 'travel';
     return { ...o, connectionId: 'connection', trips: buildTripSourcesFromSyncState(o.calendarState, {}) };
   };
+  it.each([{ tags: ['北京'] }, { tags: ['居', '北京'] }])('出行前固定日也须匹配城市，不匹配或未知则保留：$tags', async ({ tags }) => {
+    for (const beforeCity of [GUANGZHOU, undefined]) {
+      const original = task({ tags }), c = client(original);
+      const calendarState = { locationTags: ['居', '北京', '广州'],
+        tagMap: Object.fromEntries(dates.map(date => [date, 'school'])),
+        cityMap: { '2026-10-08': BEIJING, ...(beforeCity ? { '2026-10-09': beforeCity } : {}) } };
+      const result = await syncLaundrySchedule(c.api, { ...tripOptions(['2026-10-10'], {
+        tasks: [original], calendarState, availability: undefined, configState: {},
+      }), mode: 'travel' });
+      expect(result.managedTaskIds.has(original.id)).toBe(true);
+      expect(result.decisions[0]).toMatchObject({ target: '2026-10-10', reason: expect.stringContaining('不符合地点规则或地点未知') });
+      expect(c.api.updateTask).not.toHaveBeenCalled();
+      expect(c.current()).toEqual(original);
+    }
+    expect(upstream).not.toHaveBeenCalled();
+  });
   it('四天周期的目标日在出行期间也提前到出行前一天', async () => {
     const original = task({ repeatFlag: 'RRULE:FREQ=DAILY;INTERVAL=4' }), c = client(original);
     const result = await syncLaundrySchedule(c.api, tripOptions(['2026-10-09', '2026-10-10'], {

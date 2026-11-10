@@ -15,7 +15,7 @@ export async function syncTickTickLocationVisibility(api: TickTickApi, options: 
 } = {}) {
   const now = options.now ?? new Date(), today = calendarDateInTimeZone(now.toISOString(), 'Asia/Shanghai')!;
   const [tasks, calendarState, saved] = await Promise.all([
-    options.tasks ?? readAllTickTickTasks(api, [0]), options.calendarState ?? readRoutineCalendarState(),
+    options.tasks ?? readAllTickTickTasks(api, [0]), options.calendarState ?? readRoutineCalendarState(api),
     kv.get<Journal>(LOCATION_HIDDEN_KEY),
   ]);
   const journal = saved ?? {}, result = { hidden: 0, restored: 0 };

@@ -420,6 +420,15 @@ it('清理已完成事件的自动重复项优先于该重复项的显隐标签�
 });
 describe('地点显隐', () => {
   const locations = { names: ['北京', '广州', '清迈'], today: ['北京'], unknown: false };
+  it('完整地点目录同时约束城市与寄居旅，未知子标签隐藏而分组父标签不参与', () => {
+    const date = '2026-11-10';
+    const input = { ...locations, date, calendarState: { locationTags: ['寄', '居', '旅', '北京', '新住所'],
+      tagMap: { [date]: 'school' }, cityMap: { [date]: { name: '北京', latitude: 39.9, longitude: 116.4 } } } };
+    expect(locationTaskHidden(task({ tags: ['北京', '居'] }), input)).toBe(false);
+    expect(locationTaskHidden(task({ tags: ['北京', '寄'] }), input)).toBe(true);
+    expect(locationTaskHidden(task({ tags: ['新住所'] }), input)).toBe(true);
+    expect(locationTaskHidden(task({ tags: ['地点', '广州'] }), input)).toBeNull();
+  });
   it('城市标签按任一匹配；无城市标签不处理；未知当天地点不误显示', () => {
     expect(locationTaskHidden(task(), locations)).toBe(true);
     expect(locationTaskHidden(task({ tags: ['北京市', '广州'] }), locations)).toBe(false);

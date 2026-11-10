@@ -10,7 +10,7 @@ import type { TickTickTask } from './_ticktickTrips';
 const m = vi.hoisted(() => ({ data: new Map<string, any>(), tasks: [] as TickTickTask[], history: [] as TickTickTask[], abandoned: [] as TickTickTask[], abandonedRead: vi.fn(),
   get: vi.fn(), write: vi.fn(), create: vi.fn(), historyRead: vi.fn(), snapshot: vi.fn(), fullOutlook: vi.fn(), saveOutlook: vi.fn(),
   acquire: vi.fn(), release: vi.fn(), laundry: vi.fn(), exercise: vi.fn(), hairOutlook: vi.fn(), chargingOutlook: vi.fn(),
-  trip: vi.fn(), wish: vi.fn(), period: vi.fn(), pickupOutlook: vi.fn(), locationFailure: false, city: '北京' }));
+  trip: vi.fn(), wish: vi.fn(), period: vi.fn(), pickupOutlook: vi.fn(), tagsRead: vi.fn(), locationFailure: false, city: '北京' }));
 vi.mock('./_accountKv.js', () => ({ kv: {
   get: async (key: string) => structuredClone(m.data.get(key) ?? null), hgetall: async (key: string) => structuredClone(m.data.get(key) ?? null),
   set: async (key: string, value: unknown) => { m.data.set(key, structuredClone(value)); return 'OK'; },
@@ -33,7 +33,8 @@ vi.mock('./_ticktickTrips.js', async original => ({ ...await original<typeof imp
     ? api.filterTasks([], statuses) : structuredClone(m.tasks.filter(t => statuses.includes(t.status ?? 0))),
   readConnectedTickTickTemplate: async () => ({ rootTask: { id: 'template' }, tasks: [] }),
   reconcileTickTickTrips: m.trip, reconcileTickTickWishPreparations: m.wish,
-  TickTickOpenApiClient: class { getTask = m.get; updateTask = m.write; createTask = m.create; listCompletedTasks = m.historyRead; filterTasks = m.abandonedRead; },
+  TickTickOpenApiClient: class { getTask = m.get; updateTask = m.write; createTask = m.create; listCompletedTasks = m.historyRead; filterTasks = m.abandonedRead;
+    listTags = m.tagsRead.getMockImplementation() ? m.tagsRead : undefined; },
 }));
 const day = '2026-11-03';
 const task = (id: string, extra: Partial<TickTickTask> = {}): TickTickTask => ({ id, projectId: 'life', title: id, status: 0,
@@ -210,6 +211,21 @@ describe('城市待办日期', () => {
     m.city = '广州';
     m.data.set('app-config', { config: { schoolCity: BEIJING, homeCity: GUANGZHOU } });
     m.data.set('calendar-tags', { tagMap: { [day]: 'home', '2027-02-11': 'home', [arrival]: 'school', '2027-02-13': 'school' } });
+  });
+  it.each(['full', 'hourly'] as const)('%s 每轮读取地点目录，新增未知子标签不能当作普通任务排入今天', async scope => {
+    m.tagsRead.mockResolvedValue([{ name: '地点' }, { name: '未来住所', parent: '地点' }, { name: '寄', parent: '地点' }]);
+    m.tasks = [task('unknown', { tags: ['未来住所'] }), task('plain')];
+    const result = await runRuleReplan({ scope });
+    expect(m.tagsRead).toHaveBeenCalledOnce();
+    expect(result.details?.selected.some(t => t.id === 'unknown')).toBe(false);
+    expect(m.tasks.find(t => t.id === 'unknown')!.dueDate).toBe(`${day}T00:00:00+0800`);
+  });
+  it('地点目录读取失败时停止排程，不能忽略地点继续写任务', async () => {
+    m.tagsRead.mockRejectedValue(new Error('PRIVATE provider response'));
+    m.tasks = [task('city', { tags: ['北京', 'always-today'], dueDate: '2026-11-01T00:00:00+0800' })];
+    await expect(runRuleReplan({ scope: 'full' })).rejects.toThrow('地点标签读取失败');
+    expect(m.write).not.toHaveBeenCalled(); expect(m.create).not.toHaveBeenCalled();
+    expect(m.release).toHaveBeenCalledOnce();
   });
   const swimmingPrep = () => task('prep', { title: '下班准备游泳', priority: 5, tags: ['北京', '居', '洗头', 'routine', 'hidden'],
     isAllDay: false, startDate: `${day}T21:00:00+0800`, dueDate: `${day}T21:15:00+0800`,
@@ -509,13 +525,31 @@ describe('日期优先级与失败传播', () => {
 });
 
 describe('小时轮换保留原业务边界', () => {
+  it.each(['full', 'hourly'] as const)('%s 仅寄长周期逾期任务在寄场景仍排到今日', async scope => {
+    m.tagsRead.mockResolvedValue([{ name: '地点' }, { name: '寄', parent: '地点' }]);
+    m.data.set('calendar-tags', { tagMap: { [day]: 'home', '2026-11-04': 'home' } });
+    m.tasks = [task('home-backlog', { tags: ['寄'], priority: 5, repeatFlag: 'RRULE:FREQ=WEEKLY', dueDate: '2026-11-02T00:00:00+0800' })];
+    const result = await runRuleReplan({ scope });
+    expect(status(result, 'scene-date').status).toBe('success');
+    expect(m.tasks[0].dueDate).toBe(`${day}T00:00:00+0800`);
+    expect(m.tasks[0].repeatFlag).toBe('RRULE:FREQ=WEEKLY');
+  });
+  it.each([{ tag: '居', directory: ['寄'] }, { tag: '寓', directory: ['居'] }])(
+    '目录外 $tag 不被长周期场景保护抢占，仍可按预算延期', async ({ tag, directory }) => {
+      m.tagsRead.mockResolvedValue([{ name: '地点' }, ...directory.map(name => ({ name, parent: '地点' }))]);
+      m.tasks = [task('backlog', { tags: [tag], repeatFlag: 'RRULE:FREQ=WEEKLY', content: '(2h)', dueDate: '2026-11-02T00:00:00+0800' })];
+      const result = await runRuleReplan({ scope: 'full' });
+      expect(status(result, 'repeat-date').status).toBe('success');
+      expect(m.tasks[0].dueDate).toBe('2026-11-04T00:00:00+0800');
+    },
+  );
   it.each([['daily-plan', 'scene-date'], ['scene-date', 'daily-plan']] as const)(
     '%s 在 %s 之前：场景合适但未排入预算的任务隐藏，重新入选时恢复', async (first, second) => {
       config([first, second]);
       vi.setSystemTime(new Date(day + 'T09:00:00+08:00'));
       m.data.set(DAILY_PLAN_SETTINGS_KEY, { budgetMinutes: 40 });
       const future = '2026-11-04T00:00:00+0800';
-      m.tasks = [task('书衣', { tags: ['居', '玩'], content: '(2h)', dueDate: future }),
+      m.tasks = [task('书衣', { tags: ['居', '玩'], content: '(2h)', dueDate: '2026-11-02T00:00:00+0800' }),
         task('已手动隐藏', { tags: ['hidden'] }), task('未来普通项', { dueDate: future, content: '(2h)' })];
       const firstRun = await runRuleReplan({ scope: 'full' });
       expect(firstRun.details?.selected).toEqual([]);
@@ -534,10 +568,12 @@ describe('小时轮换保留原业务边界', () => {
       expect(m.tasks[1].tags).toEqual(['hidden']);
     });
   it('预算隐藏恢复时继续服从其他隐藏原因', async () => {
+    m.data.set('app-config', { config: { schoolCity: BEIJING } });
     m.tasks = [task('书衣', { tags: ['居', '北京'], content: '(2h)' })];
     await runRuleReplan({ scope: 'hourly' });
     expect(m.tasks[0].tags).toContain('hidden');
     m.city = '广州';
+    m.data.set('app-config', { config: { schoolCity: GUANGZHOU } });
     vi.setSystemTime(new Date(day + 'T09:00:00+08:00'));
     const result = await runRuleReplan({ scope: 'hourly' });
     expect(result.details?.selected).toEqual([]);
@@ -773,6 +809,6 @@ describe('当天放弃的重复任务不重新安排', () => {
     vi.setSystemTime(new Date('2026-11-04T09:00:00+08:00'));
     m.tasks[0].dueDate = '2026-11-06T08:00:00+0800';
     await runRuleReplan({ scope: 'full' });
-    expect(m.tasks[0].dueDate?.slice(0, 10)).toBe('2026-11-04');
+    expect(m.tasks[0].dueDate?.slice(0, 10)).toBe('2026-11-06');
   });
 });

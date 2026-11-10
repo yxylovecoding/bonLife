@@ -3,6 +3,7 @@ import { cycleEnd, estimateTaskMinutes, planTickTickDay, refreshDailyHistory, ty
 import { TickTickOpenApiClient, syncTickTickRoutines, type TickTickApi, type TickTickTask } from './_ticktickTrips';
 import { withRulePolicy } from './_rulePolicy';
 import { defaultRuleConfig, removeSchedulingRule } from '../src/utils/schedulingRules';
+import { BEIJING, GUANGZHOU } from '../src/utils/internship';
 const today = '2026-10-04';
 const task = (id: string, fields: Partial<TickTickTask> = {}): TickTickTask => ({ id, projectId: 'inbox-real', title: id,
   status: 0, isAllDay: true, startDate: `${today}T00:00:00+0800`, dueDate: `${today}T00:00:00+0800`, ...fields });
@@ -15,6 +16,20 @@ const apply = (tasks: TickTickTask[], dates: Map<string, string>) => tasks.map((
   ? { ...t, startDate: `${dates.get(t.id)}T00:00:00+0800`, dueDate: `${dates.get(t.id)}T00:00:00+0800` } : t);
 
 describe('每日待办动态安排', () => {
+  it.each([{ tags: ['北京'] }, { tags: ['居', '北京'] }])('同为居时仍按城市筛选今日事：$tags', ({ tags }) => {
+    const otherCity = task('beijing', { tags, content: '(15m)' });
+    const local = task('guangzhou', { tags: ['广州'], content: '(15m)' });
+    const saved = state([done(otherCity, '2026-09-01'), done(local, '2026-09-20')]);
+    const p = run([otherCity, local], { state: saved, calendarState: {
+      locationTags: ['居', '寄', '旅', '北京', '广州'],
+      tagMap: { [today]: 'school', '2026-10-05': 'school' },
+      cityMap: { [today]: GUANGZHOU, '2026-10-05': BEIJING },
+    } });
+    expect(saved.briefing!.selected.map(item => item.id)).toEqual([local.id]);
+    expect(saved.briefing!.selected[0].reasons).toContain('今天符合任务的地点规则');
+    expect(p.dates.get(otherCity.id)).toBe('2026-10-05');
+    expect(p.dates.get(local.id)).toBe(today);
+  });
   it('删除完成时间优先规则后，普通轮换不再隐式按该规则排序', () => {
     const older = task('z-older', { content: '(25m)' }), newer = task('a-newer', { content: '(25m)' });
     const evaluate = () => {

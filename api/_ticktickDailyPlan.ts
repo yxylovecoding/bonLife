@@ -1,6 +1,7 @@
 import { isEyeDrops } from './_ticktickEyeDrops.js';
 import { isPendingTickTickTask as pending } from './_ticktickTaskState.js';
 import { hasHiddenTag } from './_ticktickHiddenTag.js';
+import { hasTaskLocation } from './_ticktickLocation.js';
 import { precedes, ruleEnabled } from './_rulePolicy.js';
 import ICAL from 'ical.js';
 import type { OutlookAvailability } from '../src/utils/outlookCalendar.js';
@@ -9,7 +10,7 @@ import { dayAvailability, occupySlots, type AvailabilityProfile } from './_daily
 import { collectCompleted } from './_lifeDone.js';
 import { annotatedMinutes, describedMinutes } from './_taskDuration.js';
 import { calendarDateInTimeZone, createRoutineSceneDateFinder, isAlwaysTodayTask, routineOccurrenceKey, routineRecurrence, separateTickTickSprays, sprayKind,
-  routineScenes, routineTaskDate, type TickTickApi, type TickTickTask } from './_ticktickTrips.js';
+  routineTaskDate, type TickTickApi, type TickTickTask } from './_ticktickTrips.js';
 
 export const DAILY_PLAN_KEY = 'ticktick:daily-plan:v1';
 export const DAILY_PLAN_SETTINGS_KEY = 'ticktick:daily-plan-settings:v1';
@@ -339,10 +340,10 @@ export function planTickTickDay(options: {
       const reasons = [lastDay ? '按上次实际完成时间排序，最久没做的优先' : '尚无匹配的完成记录，优先补齐轮换'];
       if (fromBacklog) reasons.push('从明日事补入');
       if (lastDay) reasons.push(`上次完成 ${lastDay}`);
-      if (!candidate.next) reasons.push('后续没有适用场景日，保留在今天');
+      if (!candidate.next) reasons.push('后续没有适用地点日，保留在今天');
       else if (candidate.deadline <= today) reasons.push(`周期或原定日期已到（${candidate.deadline}）`);
-      else if (candidate.next > candidate.deadline) reasons.push('下次适用场景日晚于周期截止');
-      if (routineScenes(candidate.task).length) reasons.push('今天符合任务的场景标签');
+      else if (candidate.next > candidate.deadline) reasons.push('下次适用地点日晚于周期截止');
+      if (hasTaskLocation(candidate.task, calendarState)) reasons.push('今天符合任务的地点规则');
       reasons.push(fits && used + candidate.minutes <= available ? `预计 ${candidate.minutes} 分钟，可放入剩余空档`
         : '当前空档不足，仍保留；需要手动协调时间');
       selectedDetails.push({ id: candidate.task.id, projectId: candidate.task.projectId, title: candidate.task.title,

@@ -6,8 +6,9 @@ import { swimmingHairWashDates, type HairWashSchedule } from '../src/utils/lifeS
 import { isTrainingTitle, recordedTrainingProjects, rollingTrainingPlan, trainingIdentity, trainingLibrary,
   trainingName, trainingProjectKey, type TrainingSource, type TrainingTask } from '../src/utils/lifeTraining.js';
 import { readHairWashSchedule, readSwimmingCycle } from './_lifeSwimming.js';
+import { hasTaskLocation } from './_ticktickLocation.js';
 import { calendarDateInTimeZone, getTickTickRoutineTargetDates, isAlwaysTodayTask, readAllTickTickTasks, routineRecurrence,
-  routineScenes, routineSceneMatchesDate, readRoutineCalendarState, shiftTickTickDate, TICKTICK_SYNC_STATE_KEY,
+  routineSceneMatchesDate, readRoutineCalendarState, shiftTickTickDate, TICKTICK_SYNC_STATE_KEY,
   type TickTickApi, type TickTickTask, type TickTickTripSyncState } from './_ticktickTrips.js';
 
 export const EXERCISE_STATE_KEY = 'ticktick:exercise-rollover:v1';
@@ -158,7 +159,7 @@ export async function syncExerciseSchedule(api: TickTickApi, options: {
   const now = options.now ?? new Date();
   const [tasks, calendarState, previous, trips] = await Promise.all([
     options.tasks ?? readAllTickTickTasks(api, [0]),
-    options.calendarState ?? readRoutineCalendarState(),
+    options.calendarState ?? readRoutineCalendarState(api),
     kv.get<ExerciseState>(EXERCISE_STATE_KEY),
     options.excludedTaskIds ? null : kv.get<TickTickTripSyncState>(TICKTICK_SYNC_STATE_KEY),
   ]);
@@ -207,8 +208,8 @@ export async function syncExerciseSchedule(api: TickTickApi, options: {
     };
     for (const candidate of candidates.filter(task => isTrainingTitle(task.title))) {
       const target = dates.get(keyFor(candidate));
-      // An absent hair-wash date must not fall back to swimming's old weekday.
-      if (!target && (candidate.title.includes('游泳') || routineScenes(candidate).length > 0)) { managedTaskIds.add(candidate.id); continue; }
+      // Missing hair-wash or location eligibility must not fall back to standalone recurrence.
+      if (!target && (candidate.title.includes('游泳') || hasTaskLocation(candidate, calendarState))) { managedTaskIds.add(candidate.id); continue; }
       if (!target || !taskDay(candidate)) continue;
       managedTaskIds.add(candidate.id);
       fixedDates.set(candidate.id, target);

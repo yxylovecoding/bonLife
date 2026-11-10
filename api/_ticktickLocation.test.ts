@@ -34,6 +34,19 @@ beforeEach(() => { data.clear(); vi.useFakeTimers(); vi.setSystemTime(now); });
 afterEach(() => vi.useRealTimers());
 
 describe('地点匹配与日期规则分离', () => {
+  it('以地点目录为完整范围，新增未知子标签不误当无约束，父标签只分组', () => {
+    const state = { ...calendarState, locationTags: ['寄', '居', '旅', '北京', '外地住所'] };
+    expect(taskLocationAllowed(task('unknown', { tags: ['外地住所'] }), state, today)).toBe(false);
+    expect(nextTaskLocationDate(task('unknown', { tags: ['外地住所'] }), state, today)).toBeNull();
+    expect(taskLocationAllowed(task('group', { tags: ['地点'] }), state, today)).toBe(true);
+    expect(taskLocationAllowed(task('outside', { tags: ['广州'] }), state, tomorrow)).toBe(true);
+    expect(taskLocationAllowed(task('all', { tags: ['北京', '居'] }), state, tomorrow)).toBe(true);
+    expect(taskLocationAllowed(task('all', { tags: ['北京', '寄'] }), state, tomorrow)).toBe(false);
+    expect(taskLocationAllowed(task('empty', { tags: ['北京', '居'] }), { ...state, locationTags: [] }, today)).toBe(true);
+    expect(taskLocationAllowed(task('outside-alias', { tags: ['北京市', '寓', '北京·办公室'] }), state, today)).toBe(true);
+    expect(taskLocationAllowed(task('new-place', { tags: ['北京·办公室'] }),
+      { ...state, locationTags: [...state.locationTags, '北京·办公室'] }, tomorrow)).toBe(false);
+  });
   it('北京只在北京日可做，居与城市取交集，多个城市和多个场景分别取并集', () => {
     expect(taskLocationAllowed(task('city'), calendarState, today)).toBe(false);
     expect(nextTaskLocationDate(task('city'), calendarState, today)).toBe(tomorrow);
@@ -61,43 +74,43 @@ describe('地点匹配与日期规则分离', () => {
     expect(taskLocationAllowed(task('南京', { tags: ['居', '南京'] }), state, today)).toBe(true);
     expect(nextTaskLocationDate(task('city'), state, today)).toBe(later);
   });
-  it.each([['洗头'], ['routine'], []].map(tags => ({ tags })))('$tags 旧版场景同步保留独立专项日期和任务字段', async ({ tags }) => {
+  it.each([['洗头'], ['routine'], []].map(tags => ({ tags })))('$tags 旧版入口同样满足地点并保留其它字段', async ({ tags }) => {
     const original = task('city', { tags: [...tags, '北京'], isAllDay: false, dueDate: `${today}T20:00:00+0800`,
       reminders: ['TRIGGER:PT0S'], priority: 5, repeatFlag: 'RRULE:FREQ=DAILY' });
     const f = fixture([original, task('wash', { title: '洗头', tags: [] })]);
     await syncTickTickRoutines({ api: f.api, calendarState, today });
-    expect(f.stored.get('city')).toEqual(original);
+    expect(f.stored.get('city')).toEqual({ ...original, dueDate: `${tomorrow}T20:00:00+0800` });
     await syncTickTickRoutines({ api: f.api, calendarState, today });
-    expect(f.update).not.toHaveBeenCalled();
+    expect(f.update).toHaveBeenCalledOnce();
   });
-  it('城市标签不会改写长周期原日期', async () => {
+  it('未来长周期日期不符合地点时移到下一适用日', async () => {
     const state = resolveCalendarState(config, { tagMap: { [today]: 'school', [tomorrow]: 'home', [later]: 'school' } });
     const original = task('weekly', { tags: ['北京', '居'], repeatFlag: 'RRULE:FREQ=WEEKLY', dueDate: `${tomorrow}T00:00:00+0800` });
     const f = fixture([original]);
     await syncTickTickRoutines({ api: f.api, calendarState: state, today });
-    expect(routineTaskDate(f.stored.get('weekly')!)).toBe(tomorrow);
+    expect(routineTaskDate(f.stored.get('weekly')!)).toBe(later);
   });
-  it('城市标签不会改写固定训练或普通规划给出的日期', async () => {
+  it('训练或普通规划给出的日期仍须满足地点', async () => {
     const f = fixture([task('city')]);
     await syncTickTickRoutines({ api: f.api, calendarState, today, fixedTaskDates: new Map([['city', today]]),
       planDay: async () => new Map([['city', today]]) });
-    expect(routineTaskDate(f.stored.get('city')!)).toBe(today);
+    expect(routineTaskDate(f.stored.get('city')!)).toBe(tomorrow);
   });
-  it('普通轮换不读取城市标签，地点显隐由统一执行器另外裁决', () => {
+  it('普通轮换同时检查城市，只挑选今天地点适用的任务', () => {
     const plan = planTickTickDay({ tasks: [task('city'), task('ordinary', { tags: [] })], today, now, calendarState,
       state: { connectionId: 'test', history: [], deadlines: {} }, budgetMinutes: 240 });
-    expect(plan.dates.get('city')).toBe(today);
+    expect(plan.dates.get('city')).toBe(tomorrow);
     expect(plan.dates.get('ordinary')).toBe(today);
-    expect(plan.summary.todayCount).toBe(2);
+    expect(plan.summary.todayCount).toBe(1);
   });
-  it('喷雾错日与训练顺延不因城市标签改变其日期规则', () => {
+  it('喷雾错日与训练顺延必须共同符合城市', () => {
     const state = resolveCalendarState(config, { tagMap: { [today]: 'school', [tomorrow]: 'home', [later]: 'school' } });
     const dates = new Map<string, string>();
     separateTickTickSprays({ tasks: [task('a', { title: '除螨喷雾' }), task('b', { title: '香香喷雾' })],
       dates, history: [], calendarState: state, today, now });
-    expect(dates.get('b')).toBe(tomorrow);
+    expect(dates.get('b')).toBe(later);
     expect(exerciseTarget(task('run', { title: '跑步', dueDate: '2026-10-27T00:00:00+0800' }),
-      { now, calendarState })).toBe(today);
+      { now, calendarState })).toBe(tomorrow);
   });
   it('洗衣只在合适地点比较天气，不使用异地的晴天', () => {
     const sunny = { rain: 0, probability: 0, sunshine: 30000, code: 0 };

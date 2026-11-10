@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createRoutineSceneDateFinder, getTickTickRoutineTargetDates, nextRoutineSceneDate, type TickTickTask } from './_ticktickTrips';
 import { withActiveRule, withRulePolicy } from './_rulePolicy';
 import { defaultRuleConfig } from '../src/utils/schedulingRules';
+import { BEIJING, GUANGZHOU } from '../src/utils/internship';
 
 const task = (tags: string[]): TickTickTask => ({ id: 'task', projectId: 'project', title: '任务', tags });
 
@@ -39,5 +40,22 @@ describe('单轮排程的场景日期索引', () => {
     expect(withRulePolicy(config, () => withActiveRule('daily-plan', () => find(task(['寄']), '2026-11-04'))))
       .toBe('2026-11-04');
     expect(find(task(['寄']), '2026-11-04')).toBe('2026-11-06');
+  });
+  it('旧场景日期接口与索引均查完整地点条件，城市日期不要求已有场景', () => {
+    const state = { tagMap: { '2026-11-05': 'school', '2026-11-06': 'home', '2026-11-07': 'intern' },
+      cityMap: { '2026-11-05': GUANGZHOU, '2026-11-06': BEIJING, '2026-11-07': BEIJING, '2026-11-08': BEIJING } };
+    const find = createRoutineSceneDateFinder(state);
+    expect(find(task(['居', '北京']), '2026-11-05')).toBe('2026-11-07');
+    expect(find(task(['北京']), '2026-11-05')).toBe('2026-11-06');
+    expect(find(task(['北京']), '2026-11-08')).toBe('2026-11-08');
+    expect(find(task(['居', '北京']), '2026-11-08')).toBeNull();
+    for (const tags of [[], ['居'], ['北京'], ['居', '北京'], ['寄', '居', '北京', '广州']]) {
+      for (const from of ['2026-11-04', '2026-11-05', '2026-11-06', '2026-11-08', '2026-11-09']) {
+        expect(find(task(tags), from)).toBe(nextRoutineSceneDate(task(tags), state, from));
+      }
+    }
+    state.cityMap['2026-11-07'] = GUANGZHOU;
+    expect(find(task(['居', '北京']), '2026-11-05')).toBe('2026-11-07');
+    expect(createRoutineSceneDateFinder(state)(task(['居', '北京']), '2026-11-05')).toBeNull();
   });
 });

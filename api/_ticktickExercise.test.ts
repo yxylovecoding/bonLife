@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CYCLE } from '../src/utils/bonLife';
+import { BEIJING, GUANGZHOU } from '../src/utils/internship';
 import { EXERCISE_STATE_KEY, exerciseTarget, isExerciseTask, syncExerciseSchedule, rollingExerciseDates } from './_ticktickExercise';
 import { rollingTrainingPlan, type TrainingSource } from '../src/utils/lifeTraining';
 import { syncTickTickRoutines, type TickTickApi, type TickTickTask } from './_ticktickTrips';
@@ -39,6 +40,35 @@ function fakeApi(...tasks: TickTickTask[]) {
 beforeEach(() => { data.clear(); training.mockReset(); });
 
 describe('与网页共用实际完成轮换', () => {
+  it.each([{ tags: ['北京'] }, { tags: ['居', '北京'] }])('训练检查完整地点规则，同为居也不能选错城市：$tags', async ({ tags }) => {
+    const task = workout({ id: 'cardio', title: '燃脂操-运动💪🏻是生活的第一个锚点🪝', tags,
+      dueDate: '2026-10-05T01:00:00.000+0000', startDate: '2026-10-05T01:00:00.000+0000' });
+    training.mockResolvedValue({ year: 2026, connected: true, syncedAt: null, tasks: [{ id: 'life:cardio', name: '燃脂操',
+      title: task.title, dates: [], schedule: '', notes: '', links: [] }] });
+    const f = fakeApi(task);
+    const calendarState = { locationTags: ['居', '寄', '旅', '北京', '广州'],
+      tagMap: { '2026-10-05': 'school', '2026-10-06': 'school' },
+      cityMap: { '2026-10-05': GUANGZHOU, '2026-10-06': BEIJING } };
+    const result = await syncExerciseSchedule(f.api, { rolling: true, connectionId: 'account',
+      now: now('2026-10-05T10:00:00'), calendarState });
+    expect(result.fixedDates.get(task.id)).toBe('2026-10-06');
+    expect(f.stored.get(task.id)).toMatchObject({ tags, repeatFlag: task.repeatFlag, repeatFrom: task.repeatFrom,
+      priority: 5, dueDate: '2026-10-06T01:00:00.000+0000' });
+  });
+  it('只有城市标签且轮换窗口内无适用地点时，不能回退到独立重复排程', async () => {
+    const task = workout({ id: 'cardio', title: '燃脂操-运动💪🏻是生活的第一个锚点🪝', tags: ['北京'],
+      repeatFlag: 'RRULE:FREQ=DAILY', dueDate: '2026-10-04T01:00:00.000+0000' });
+    training.mockResolvedValue({ year: 2026, connected: true, syncedAt: null, tasks: [{ id: 'life:cardio', name: '燃脂操',
+      title: task.title, dates: [], schedule: '', notes: '', links: [] }] });
+    const f = fakeApi(task);
+    const calendarState = { locationTags: ['北京', '广州'], cityMap: { '2026-10-05': GUANGZHOU, '2027-01-10': BEIJING } };
+    const result = await syncExerciseSchedule(f.api, { rolling: true, connectionId: 'account',
+      now: now('2026-10-05T10:00:00'), calendarState });
+    expect(result.managedTaskIds.has(task.id)).toBe(true);
+    expect(result.fixedDates.has(task.id)).toBe(false);
+    expect(f.update).not.toHaveBeenCalled();
+    expect(f.stored.get(task.id)).toEqual(task);
+  });
   it('手动游泳记录不把今天的 HIIT 顺延，完成状态只作用于游泳', async () => {
     const hiit = workout({ id: 'hiit', title: 'HIIT-运动💪🏻是生活的第一个锚点🪝',
       startDate: '2026-11-10T00:00:00+0800', dueDate: '2026-11-10T00:00:00+0800', isAllDay: true });

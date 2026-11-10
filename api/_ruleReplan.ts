@@ -15,6 +15,7 @@ import { hasHiddenTag } from './_ticktickNightRoutine.js';
 import { withHiddenTag } from './_ticktickHiddenTag.js';
 import { hasTaskLocation, nextTaskLocationDate, taskCityTags, taskLocationAllowed } from './_ticktickLocation.js';
 import { hairWashLocationDate } from './_hairWashLocation.js';
+import { readTickTickLocationTags } from './_ticktickLocationTags.js';
 import { syncOutlookCalendar, saveOutlookSnapshot, OUTLOOK_CONNECTION_KEY, type OutlookConnection } from './_outlookSync.js';
 import { decryptOutlookConnection, readOutlookSnapshot } from './_outlookCalendar.js';
 import { applyOutlookSnapshotToState, type OutlookAvailability } from '../src/utils/outlookCalendar.js';
@@ -82,10 +83,11 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       let trainingDates = new Map<string, string>();
       let trainingRevealIds: string[] | undefined;
       const api = new TickTickOpenApiClient(token, (process.env.TICKTICK_API_BASE_URL || '').trim() || undefined);
-      const [tasks, configState, storedCalendar, tripState, storedTrips, settings, saved] = await Promise.all([
+      const [tasks, configState, storedCalendar, tripState, storedTrips, settings, saved, locationTags] = await Promise.all([
         schedulingStage('tasks-read', true, () => readAllTickTickTasks(api, options.scope === 'visibility' ? [0] : [0, 2])), kv.get('app-config'), kv.get('calendar-tags'), kv.get('trip-tags'),
         kv.get<TickTickTripSyncState>('ticktick:trip-sync:v1'),
         kv.get<{ budgetMinutes?: number | null; availabilityProfile?: string }>(DAILY_PLAN_SETTINGS_KEY), kv.get<DailyPlanState>(DAILY_PLAN_KEY),
+        readTickTickLocationTags(api),
       ]);
       let calendarState = resolveCalendarState(configState, storedCalendar);
       let availability: OutlookAvailability | undefined, calendarError = false;
@@ -106,6 +108,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           if (outlookSnapshot?.connected) calendarState = resolveCalendarState(configState, applyOutlookSnapshotToState((storedCalendar ?? {}) as Record<string, unknown>, outlookSnapshot.snapshot, outlookSnapshot.policy, today));
         } catch { calendarError = true; }
       }
+      if (locationTags !== undefined) calendarState = { ...calendarState, locationTags };
       const maintainsDates = options.scope !== 'visibility' || ['daily', 'all', 'night'].includes(options.visibilityKind ?? '');
       const abandonedToday = maintainsDates
         ? await schedulingStage('completion-history', true, () => readAbandonedTodayTaskIds(api, tasks, today, now)) : new Set<string>();
@@ -245,33 +248,22 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         // unchanged date ahead of location, recurrence or ordinary rotation.
         plan('sprays', async () => {});
         plan('scene-date', async branch => {
-          const tagMap = (calendarState as { tagMap?: Record<string, string> }).tagMap ?? {};
           const values = draft.values();
           const wasCompleted = matchCompletedOccurrences(values, state.history.filter(record =>
             calendarDateInTimeZone(record.completedTime, 'Asia/Shanghai') === today));
           for (const task of values.filter(t => pending(t) && !excluded.has(t.id) && !isAlwaysTodayTask(t) && !isEyeDrops(t) && !isElectricVehiclePickup(t))) {
             if (followsHairWash(task) && precedes('hair-follow', 'scene-date')) continue;
-            const recurrence = routineRecurrence(task.repeatFlag), scenes = routineScenes(task);
-            const cities = taskCityTags(task, calendarState);
-            if (cities.length) {
-              if (!visibility.locations) throw new Error('地点读取失败，保留当前排期');
-              if (recurrence === 'unknown' || taskLocationAllowed(task, calendarState, today)) continue;
-              const original = routineTaskDate(task);
-              if (original && original > today && taskLocationAllowed(task, calendarState, original)) continue;
-              // Keep a future deadline as the lower bound; overdue tasks can
-              // move beyond the ordinary rotation's 30-day candidate window.
-              const from = original && original > today ? original
-                : recurrence === 'daily' && wasCompleted(task) ? plusDay(today) : today;
-              const date = nextTaskLocationDate(task, calendarState, from);
-              if (date) await branch.api.updateTask(task.id, routineTaskPayload(task, date));
-              continue;
-            }
-            if (options.scope !== 'full') continue;
-            if (!scenes.length || recurrence === 'unknown') continue;
-            const scene = tagMap[today] === 'home' ? 'home' : tagMap[today] === 'travel' ? 'travel' : ['intern', 'school'].includes(tagMap[today]) ? 'school' : null;
-            if (recurrence === 'long' && !scene) continue;
-            const from = recurrence === 'daily' && wasCompleted(task) ? plusDay(today) : today;
-            const date = nextRoutineSceneDate(task, calendarState, from);
+            if (!hasTaskLocation(task, calendarState)) continue;
+            if (!visibility.locations) throw new Error('地点读取失败，保留当前排期');
+            const recurrence = routineRecurrence(task.repeatFlag), original = routineTaskDate(tasks.find(t => t.id === task.id) ?? task);
+            if (recurrence === 'unknown') continue;
+            if (original && original > today && taskLocationAllowed(task, calendarState, original)) continue;
+            if (recurrence === 'long' && original && original <= today
+              && (routineScenes(task, calendarState).some(scene => scene !== 'home') || taskCityTags(task, calendarState).length > 0)
+              && taskLocationAllowed(task, calendarState, today)) continue;
+            const from = original && original > today ? original
+              : recurrence === 'daily' && wasCompleted(task) ? plusDay(today) : today;
+            const date = nextTaskLocationDate(task, calendarState, from);
             if (date === today && overBudget?.has(task.id)) {
               // An earlier rotation also owns a decision to keep a backlog date.
               draft.protect('daily-plan', [task.id]);
@@ -286,8 +278,8 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           const targets = getTickTickRoutineTargetDates(calendarState, today);
           branch.claimDates(draft.values().filter(t => pending(t) && !excluded.has(t.id) && !isAlwaysTodayTask(t) && !isEyeDrops(t) && !isElectricVehiclePickup(t)
             && routineRecurrence(t.repeatFlag) === 'long' && routineTaskDate(t)
-            && (!taskCityTags(t, calendarState).length || taskLocationAllowed(t, calendarState, today))
-            && routineScenes(t).some(scene => scene !== 'home' && targets[scene] === today)).map(t => t.id));
+            && taskLocationAllowed(t, calendarState, routineTaskDate(t)! > today ? routineTaskDate(t)! : today)
+            && routineScenes(t, calendarState).some(scene => scene !== 'home' && targets[scene] === today)).map(t => t.id));
         });
         plan('hair-follow', async branch => {
           const values = draft.values(), followers = values.filter(t => pending(t) && followsHairWash(t) && !isAlwaysTodayTask(t) && !isEyeDrops(t));
@@ -362,7 +354,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           : id === 'moving-date' || id === 'template-content' ? Boolean(task.parentId) || task.title.includes('搬家-')
           : id.startsWith('laundry') ? isLaundryTask(task) : id === 'hair-follow' ? followsHairWash(task)
           : id === 'always-today' ? (task.tags ?? []).includes('always-today')
-          : id === 'scene-date' || id === 'repeat-date' || id === 'scene-eligibility' ? routineScenes(task).length > 0 || taskCityTags(task, calendarState).length > 0
+          : id === 'scene-date' || id === 'repeat-date' || id === 'scene-eligibility' ? hasTaskLocation(task, calendarState)
           : id === 'sprays' ? /香香喷雾|除螨喷雾/.test(task.title)
           : id === 'minimum-interval' ? (task.tags ?? []).includes('at-least')
           : ['daily-plan', 'oldest', 'urgency', 'important'].includes(id) ? (task.priority ?? 0) !== 5 && !(task.tags ?? []).some(t => ['routine', '不关我事'].includes(t))

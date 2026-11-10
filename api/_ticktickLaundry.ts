@@ -1,5 +1,6 @@
 import { kv } from './_accountKv.js';
 import { hasHiddenTag } from './_ticktickHiddenTag.js';
+import { taskLocationAllowed } from './_ticktickLocation.js';
 import { upstream } from './_bonClothes.js';
 import type { SceneCity } from '../src/models/types.js';
 import { readSceneCity } from '../src/utils/sceneCities.js';
@@ -283,6 +284,10 @@ export async function syncLaundrySchedule(api: TickTickApi, options: PlanOptions
       managedTaskIds.add(task.id);
       if (beforeTrip < options.today) {
         decisions.push({ id: task.id, target: anchor.target, reason: '出行前一天已过，保留待办等待补做' });
+        continue;
+      }
+      if (!taskLocationAllowed(task, options.calendarState, beforeTrip)) {
+        decisions.push({ id: task.id, target: anchor.target, reason: '出行前一天不符合地点规则或地点未知，保留原排期' });
         continue;
       }
       const changed = await moveLaundry(api, task, beforeTrip, laundryNote(task, anchor, beforeTrip, options,

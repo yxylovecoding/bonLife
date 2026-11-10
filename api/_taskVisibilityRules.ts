@@ -7,8 +7,9 @@ import { hairWashHidden, readingHidden, nightRoutineHidden, timedTaskHidden, has
 import type { TickTickTask } from './_ticktickTrips.js';
 import { isPendingTickTickTask } from './_ticktickTaskState.js';
 import type { SchedulingRuleId } from '../src/utils/schedulingRules.js';
+import { hasTaskLocation, taskLocationAllowed } from './_ticktickLocation.js';
 
-export interface LocationVisibility { names: string[]; today: string[]; unknown: boolean }
+export interface LocationVisibility { names: string[]; today: string[]; unknown: boolean; calendarState?: unknown; date?: string }
 export async function readLocationVisibility(today: string, calendarState?: unknown): Promise<LocationVisibility> {
   const [days, config, calendar, trips, contexts, plans] = await Promise.all([
     readCalendarLocations(today, today, calendarState), kv.get('app-config'), kv.get('calendar-tags'), kv.get('trip-tags'),
@@ -31,9 +32,14 @@ export async function readLocationVisibility(today: string, calendarState?: unkn
   // A multi-stop trip without an explicit per-day location cannot prove where
   // the user is today; it must not reveal todos for every stop at once.
   const unknown = locations.length !== 1 || Boolean(days[today]?.unresolved?.length);
-  return { names: [...names], today: !unknown ? locations.map(c => normalizedCityName(c.name)) : [], unknown };
+  const state = (calendarState ?? calendar ?? {}) as { cityMap?: Record<string, unknown>; dayOverrides?: Record<string, unknown> };
+  return { names: [...names], today: !unknown ? locations.map(c => normalizedCityName(c.name)) : [], unknown, date: today,
+    calendarState: { ...state, cityMap: { ...state.cityMap, [today]: unknown ? null : locations[0] },
+      dayOverrides: { ...state.dayOverrides, [today]: {} } } };
 }
 export function locationTaskHidden(task: TickTickTask, locations: LocationVisibility): boolean | null {
+  if (locations.calendarState && locations.date) return hasTaskLocation(task, locations.calendarState)
+    ? !taskLocationAllowed(task, locations.calendarState, locations.date) : null;
   const tags = (task.tags ?? []).map(normalizedCityName).filter(tag => locations.names.includes(tag));
   return tags.length ? !tags.some(tag => locations.today.includes(tag)) : null;
 }

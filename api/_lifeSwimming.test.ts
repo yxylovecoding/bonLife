@@ -140,6 +140,7 @@ describe('经期游泳顺延', () => {
     data.set(LIFE_SETTINGS_KEY, { cycle: { ...cycle, lastPeriodStart: date } });
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith('/project')) return new Response('[]');
+      if (url.endsWith('/tag')) return new Response('[]');
       if (url.endsWith('/filter')) return new Response('[]');
       if (url.endsWith('/inbox/data')) return new Response(JSON.stringify({ tasks: [saved] }));
       if (url.endsWith('/project/inbox-real/task/swim')) return new Response(JSON.stringify(saved));

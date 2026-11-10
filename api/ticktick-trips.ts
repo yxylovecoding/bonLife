@@ -196,7 +196,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       const token = decryptTickTickToken(connection.encryptedToken, getSyncSecret());
       const api = new TickTickOpenApiClient(token,
         (process.env.TICKTICK_API_BASE_URL || '').trim() || undefined);
-      const calendarState = await readRoutineCalendarState();
+      const calendarState = await readRoutineCalendarState(api);
       const inspection = await inspectTickTickTaskDate(api, title, calendarState);
       const { inspectTickTickVisibility } = await import('./_ticktickVisibilityStatus.js');
       const visibility = await inspectTickTickVisibility(inspection.tasks.map(t => t.current), {

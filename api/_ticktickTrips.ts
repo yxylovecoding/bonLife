@@ -9,7 +9,8 @@ import { Lunar } from 'lunar-typescript';
 import ICAL from 'ical.js';
 import { withoutDurationAnnotations } from './_taskDuration.js';
 import { getTripDisplayTitle, normalizeOutlookTravelTitles } from '../src/utils/outlookCalendar.js';
-import { nextTaskLocationDate } from './_ticktickLocation.js';
+import { createTaskLocationDateFinder, hasTaskLocation, nextTaskLocationDate, taskCityTags, taskLocationAllowed, taskSceneTags } from './_ticktickLocation.js';
+import { readTickTickLocationTags } from './_ticktickLocationTags.js';
 
 export const TICKTICK_CONNECTION_KEY = 'ticktick:connection:v1';
 export const TICKTICK_SYNC_STATE_KEY = 'ticktick:trip-sync:v1';
@@ -174,7 +175,10 @@ export interface TickTickRoutineSyncResult {
   routineTaskCounts: Record<keyof TickTickRoutineTargets, number>;
 }
 
+export interface TickTickTag { name?: string; label?: string; parent?: string }
+
 export interface TickTickApi {
+  listTags?(): Promise<TickTickTag[]>;
   listProjects(): Promise<TickTickProject[]>;
   getPreference(): Promise<{ timeZone?: string }>;
   getProjectData(projectId: string): Promise<TickTickProjectData>;
@@ -274,6 +278,10 @@ export class TickTickOpenApiClient implements TickTickApi {
 
   listProjects() {
     return this.request<TickTickProject[]>('/project');
+  }
+
+  listTags() {
+    return this.request<TickTickTag[]>('/tag');
   }
 
   getPreference() {
@@ -558,15 +566,6 @@ function calendarTagMapFromSyncState(calendarState: unknown): Record<string, unk
     : {};
 }
 
-function findRoutineTargetDate(tagMap: Record<string, unknown>, fromDate: string, matches: (tag: unknown) => boolean): string | null {
-  let nearest: string | null = null;
-  for (const date of Object.keys(tagMap)) {
-    if (date < fromDate || (nearest && date >= nearest) || !matches(tagMap[date])) continue;
-    if (isValidCalendarDate(date)) nearest = date;
-  }
-  return nearest;
-}
-
 export function getTickTickRoutineTargetDates(calendarState: unknown, today: string): TickTickRoutineTargets {
   const tagMap = calendarTagMapFromSyncState(calendarState);
   const targets: TickTickRoutineTargets = { home: null, school: null, travel: null };
@@ -579,40 +578,22 @@ export function getTickTickRoutineTargetDates(calendarState: unknown, today: str
   return targets;
 }
 
-// A plan reads one immutable calendar snapshot. Build its sorted scene dates
-// once; retain no calendar/account data after that plan returns.
+// Legacy scene-query callers share the complete location rule (city AND scene).
+// Keep the per-run snapshot index and the active rule's existing precedence.
 export function createRoutineSceneDateFinder(calendarState: unknown) {
-  const days: Record<keyof TickTickRoutineTargets, string[]> = { home: [], school: [], travel: [] };
-  for (const [date, tag] of Object.entries(calendarTagMapFromSyncState(calendarState))) {
-    const scene = routineCalendarScene(tag);
-    if (scene && isValidCalendarDate(date)) days[scene].push(date);
-  }
-  for (const dates of Object.values(days)) dates.sort();
-  return (task: TickTickTask, from: string): string | null => {
-    const scenes = routineScenes(task);
-    if (!scenes.length) return from;
-    let nearest: string | null = null;
-    for (const scene of scenes) {
-      const dates = days[scene];
-      let low = 0, high = dates.length;
-      while (low < high) {
-        const middle = (low + high) >>> 1;
-        if (dates[middle] < from) low = middle + 1;
-        else high = middle;
-      }
-      const date = dates[low];
-      if (date && (!nearest || date < nearest)) nearest = date;
-    }
-    return nearest;
-  };
+  const find = createTaskLocationDateFinder(calendarState);
+  return (task: TickTickTask, from: string): string | null => routineLocationApplies() ? find(task, from) : from;
 }
 
-export function routineScenes(task: TickTickTask): Array<keyof TickTickRoutineTargets> {
+function routineLocationApplies(): boolean {
   const active = currentRule();
-  if (active && !['scene-date', 'scene-eligibility', 'repeat-date'].includes(active) && !precedes('scene-eligibility', active)) return [];
+  return !active || ['scene-date', 'scene-eligibility', 'repeat-date'].includes(active) || precedes('scene-eligibility', active);
+}
+
+export function routineScenes(task: TickTickTask, calendarState?: unknown): Array<keyof TickTickRoutineTargets> {
+  if (!routineLocationApplies()) return [];
   const scenes = new Set<keyof TickTickRoutineTargets>();
-  for (const tag of task.tags ?? []) {
-    const label = tag.normalize('NFKC').trim();
+  for (const label of taskSceneTags(task, calendarState)) {
     if (label === '寄') scenes.add('home');
     if (label === '居' || label === '寓') scenes.add('school');
     if (label === '旅') scenes.add('travel');
@@ -904,27 +885,24 @@ export async function updateRoutineTaskDate(
 
 // Callers hold the shared write lock. Re-read each matching task to retain edits
 // made since the list snapshot, and never revive a completed occurrence.
-export async function readRoutineCalendarState(): Promise<unknown> {
+export async function readRoutineCalendarState(api?: TickTickApi): Promise<unknown> {
   const [{ kv }, { resolveCalendarState }] = await Promise.all([import('./_accountKv.js'), import('../src/utils/internship.js')]);
-  const [calendar, config] = await Promise.all([kv.get('calendar-tags'), kv.get('app-config')]);
-  return resolveCalendarState(config, calendar);
+  const [calendar, config, locationTags] = await Promise.all([
+    kv.get('calendar-tags'), kv.get('app-config'), api ? readTickTickLocationTags(api) : undefined,
+  ]);
+  return { ...resolveCalendarState(config, calendar), ...(locationTags !== undefined ? { locationTags } : {}) };
 }
 
 export function nextRoutineSceneDate(task: TickTickTask, calendarState: unknown, from: string): string | null {
-  const scenes = routineScenes(task);
-  if (!scenes.length) return from;
-  const targets = getTickTickRoutineTargetDates(calendarState, from);
-  return scenes.map(scene => targets[scene]).filter((date): date is string => Boolean(date)).sort()[0] ?? null;
+  return routineLocationApplies() ? nextTaskLocationDate(task, calendarState, from) : from;
 }
 
-// A candidate day only needs its own scene. Looking up the next scene date
+// A candidate day only needs its own location. Looking up the next location date
 // scans the entire lifetime calendar for every project in a rolling forecast.
 export function routineSceneMatchesDate(task: TickTickTask, calendarState: unknown, date: string): boolean {
-  const scenes = routineScenes(task);
-  if (!scenes.length) return true;
+  if (!routineLocationApplies() || !hasTaskLocation(task, calendarState)) return true;
   if (!isValidCalendarDate(date)) return false;
-  const scene = routineCalendarScene(calendarTagMapFromSyncState(calendarState)[date]);
-  return scene !== null && scenes.includes(scene);
+  return taskLocationAllowed(task, calendarState, date);
 }
 
 export async function syncTickTickAlwaysToday(api: TickTickApi, options: { tasks?: TickTickTask[]; today?: string; calendarState?: unknown; protectedTaskIds?: ReadonlySet<string> } = {}) {
@@ -936,7 +914,7 @@ export async function syncTickTickAlwaysToday(api: TickTickApi, options: { tasks
   const candidates = tasks.filter(task => !options.protectedTaskIds?.has(task.id) && needsToday(task) && isAlwaysTodayTask(task) && isPendingTickTickTask(task));
   if (!candidates.length) return { matched: 0, updated: 0 };
   // City-only tasks also need the calendar, including its configured city names.
-  const calendarState = options.calendarState ?? await readRoutineCalendarState();
+  const calendarState = options.calendarState ?? await readRoutineCalendarState(api);
   // A repeating task can already be pending again with a new ID after completion.
   // Read today's actual completions before any writes; failed reads must not look empty.
   const completed = await schedulingStage('completion-history', true, async () => {
@@ -1031,27 +1009,30 @@ export async function syncTickTickRoutines(options: {
   const candidates = allTasks
     .filter((task) => (task.status ?? 0) === 0 && !isExcluded(task) && !isAlwaysTodayTask(task) && !isEyeDrops(task))
     .map((task) => {
-      const scenes = routineScenes(task);
-      const recurrence = scenes.includes('school') || scenes.includes('travel')
+      const scenes = routineScenes(task, calendarState);
+      const recurrence = scenes.includes('school') || scenes.includes('travel') || taskCityTags(task, calendarState).length
         ? routineRecurrence(task.repeatFlag) : 'none';
       return { task, scenes, recurrence };
     })
-    .filter(({ scenes }) => scenes.length > 0);
+    .filter(({ task }) => hasTaskLocation(task, calendarState));
   let updatedRoutineTasks = alwaysToday.updated;
   const routineTaskCounts = { home: 0, school: 0, travel: 0 };
   for (const { scenes } of candidates) {
     for (const scene of scenes) routineTaskCounts[scene] += 1;
   }
 
-  const schedulingCandidates = candidates.filter(({ task, scenes, recurrence }) => {
+  const schedulingCandidates = candidates.filter(({ task, recurrence }) => {
     // Explicit date following takes precedence over every scene / recurrence rule,
     // including when the anchor is missing or has no usable date.
     if (followsHairWash(task)) return false;
     if (recurrence === 'unknown') return false;
     if (recurrence !== 'long') return true;
-    // In an applicable scene, TickTick owns the next occurrence, even if it is
-    // overdue or was just generated after completion. Do not realign checklist dates either.
-    return currentScene !== null && !(scenes.includes(currentScene) && routineTaskDate(task));
+    // Preserve a long recurrence when its scheduled day is applicable. An overdue
+    // occurrence may stay put while today's location applies, without realigning items.
+    const original = routineTaskDate(task);
+    const applicableDate = original && original > today ? original : today;
+    return (currentScene !== null || taskCityTags(task, calendarState).length > 0)
+      && !(original && taskLocationAllowed(task, calendarState, applicableDate));
   });
   const routineProjectIds = [...new Set(schedulingCandidates
     .filter(({ task }) => Boolean(task.repeatFlag)).map(({ task }) => task.projectId))];
@@ -1062,7 +1043,6 @@ export async function syncTickTickRoutines(options: {
   ) : [];
   const wasCompleted = matchCompletedOccurrences(allTasks, completedToday.filter(task =>
     (task.status ?? 2) === 2 && calendarDateInTimeZone(task.completedTime, 'Asia/Shanghai') === today));
-  const tomorrowTargets = getTickTickRoutineTargetDates(calendarState, addCalendarDays(today, 1));
 
   const targetDates = new Map<string, string>();
   let sprayDates = new Map<string, string>();
@@ -1075,20 +1055,14 @@ export async function syncTickTickRoutines(options: {
     const minimum = options.minimumTaskDates?.get(task.id);
     if (!minimum) return nextRoutineSceneDate(task, calendarState, date);
     const from = date < minimum ? minimum : date;
-    const scenes = routineScenes(task);
-    if (!scenes.length) return from;
-    const targets = getTickTickRoutineTargetDates(calendarState, from);
-    return scenes.map(scene => targets[scene]).filter((day): day is string => day !== null).sort()[0] ?? null;
+    return nextRoutineSceneDate(task, calendarState, from);
   };
-  for (const { task, scenes, recurrence } of schedulingCandidates) {
+  for (const { task } of schedulingCandidates) {
     const completedThisOccurrence = Boolean(task.repeatFlag) && wasCompleted(task);
-    const targets = completedThisOccurrence ? tomorrowTargets : routineTargets;
-    const taskTargetDate = recurrence === 'long'
-      ? findRoutineTargetDate(tagMap, completedThisOccurrence ? addCalendarDays(today, 1) : today, (tag) => {
-        const scene = routineCalendarScene(tag);
-        return scene !== null && scenes.includes(scene);
-      })
-      : scenes.map((scene) => targets[scene]).filter((date): date is string => date !== null).sort()[0];
+    const original = routineTaskDate(task);
+    const from = completedThisOccurrence ? addCalendarDays(today, 1) : today;
+    const taskTargetDate = nextRoutineSceneDate(task, calendarState,
+      original && original > from ? original : from);
     if (!taskTargetDate) continue;
     targetDates.set(task.id, taskTargetDate);
   }
