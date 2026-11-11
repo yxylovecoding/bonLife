@@ -43,6 +43,112 @@ it('rejects ambiguous and missing matches before writes', async () => {
   await expect(syncTickTickTemplates(api, 'travel', 'conn')).rejects.toThrow('多个匹配'); expect(updateTask).not.toHaveBeenCalled();
 });
 
+it('rebinds legacy cross-container pairs to matching samples without touching full-size kits', async () => {
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  const travel = m.tasks.find(t => t.id === 'a0')!, full = m.tasks.find(t => t.id === 'b0')!;
+  full.title += '（正装）'; full.content = 'full-size only';
+  const sample = { ...make('sample', '🧳🪥漱（小样）', 'b'), content: 'sample edit', modifiedTime: '2026-11-11T10:00:00Z' };
+  Object.assign(travel, { modifiedTime: '2026-11-10T10:00:00Z' });
+  m.tasks.push(sample);
+  const saved = m.saved.get('ticktick:template-pairs:v1:conn:travel') as any;
+  const pairs = templatePairs(m.tasks, 'travel', saved);
+  expect(pairs['🪥漱']).toBeUndefined();
+  expect(pairs['🪥漱:小样']).toEqual({ ids: ['a0', 'sample'] });
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  expect(travel).toMatchObject({ title: '🧳🪥漱', content: 'sample edit' });
+  expect(sample.title).toBe('🧳🪥漱（小样）');
+  expect(full).toMatchObject({ title: '📦🪥漱（正装）', content: 'full-size only' });
+  travel.title = '🧳🪥漱新版'; travel.content = 'updated sample';
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  expect(sample).toMatchObject({ title: '🧳🪥漱新版（小样）', content: 'updated sample', parentId: 'b', tags: ['routine'] });
+  expect(full.content).toBe('full-size only');
+  updateTask.mockClear(); await syncTickTickTemplates(api, 'travel', 'conn'); expect(updateTask).not.toHaveBeenCalled();
+});
+
+it('skips incomplete specification migrations instead of falling back to a cross-specification pair', async () => {
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  const full = m.tasks.find(t => t.id === 'b0')!;
+  full.title += '（正装）'; full.content = 'keep full-size';
+  updateTask.mockClear();
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  expect(updateTask).not.toHaveBeenCalled();
+  expect(m.tasks.find(t => t.id === 'a0')!.content).toBe('same');
+  expect(full.content).toBe('keep full-size');
+});
+
+it('syncs both matching specifications independently and preserves each exact suffix', async () => {
+  const travelSample = m.tasks.find(t => t.id === 'a0')!, movingFull = m.tasks.find(t => t.id === 'b0')!;
+  travelSample.title += '(小样)'; movingFull.title += '（正装）';
+  const travelFull = make('travel-full', '📦🪥漱（正装）', 'a');
+  const movingSample = make('moving-sample', '🧳🪥漱（小样）', 'b');
+  m.tasks.push(travelFull, movingSample);
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  movingFull.content = 'full only'; travelSample.content = 'sample only';
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  expect(travelFull.content).toBe('full only'); expect(movingFull.content).toBe('full only');
+  expect(movingSample.content).toBe('sample only'); expect(travelSample.content).toBe('sample only');
+  expect(travelSample.title).toBe('🧳🪥漱(小样)'); expect(movingSample.title).toBe('🧳🪥漱（小样）');
+});
+
+it('rejects duplicate candidates within one specification even with saved IDs', async () => {
+  m.tasks.find(t => t.id === 'a0')!.title += '（小样）';
+  m.tasks.find(t => t.id === 'b0')!.title = '🧳🪥漱（小样）';
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  m.tasks.push(make('duplicate-sample', '🧳🪥漱（小样）', 'b'));
+  updateTask.mockClear();
+  await expect(syncTickTickTemplates(api, 'travel', 'conn')).rejects.toThrow('多个匹配');
+  expect(updateTask).not.toHaveBeenCalled();
+});
+
+it('pairs the labelled plain suitcase with the white travel bag and keeps special titles local', async () => {
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  const full = m.tasks.find(t => t.id === 'b9')!, travel = m.tasks.find(t => t.id === 'a9')!;
+  full.title = '📦（正装）'; full.content = 'full container'; travel.title += '（小样）';
+  const sample = make('sample-container', '🧳（小样）', 'b'); m.tasks.push(sample);
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  sample.content = 'new sample contents';
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  expect(travel).toMatchObject({ title: '🧳【⚪️】（小样）', content: 'new sample contents' });
+  expect(sample.title).toBe('🧳（小样）'); expect(full).toMatchObject({ title: '📦（正装）', content: 'full container' });
+});
+
+it('keeps pinned specification categories private including saved renamed tasks', async () => {
+  m.tasks.find(t => t.id === 'a0')!.title += '（小样）';
+  const sample = m.tasks.find(t => t.id === 'b0')!; sample.title = '🧳🪥漱（小样）';
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  sample.title = '🧳私人物品（小样）📌'; sample.content = 'private';
+  updateTask.mockClear(); await syncTickTickTemplates(api, 'travel', 'conn');
+  expect(updateTask).not.toHaveBeenCalled(); expect(m.tasks.find(t => t.id === 'a0')!.content).toBe('same');
+});
+
+it('keeps pinned full-size kits private without blocking the independent sample pair', async () => {
+  const full = m.tasks.find(t => t.id === 'b0')!;
+  full.title += '（正装）📌'; full.content = 'private full-size';
+  const sample = make('sample', '🧳🪥漱（小样）', 'b'); m.tasks.push(sample);
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  sample.content = 'shared sample';
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  expect(m.tasks.find(t => t.id === 'a0')!.content).toBe('shared sample');
+  expect(full.content).toBe('private full-size');
+});
+
+it('retains legacy-only full-size instance associations when sample pairs replace category keys', async () => {
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  const storageKey = 'ticktick:template-pairs:v1:conn:travel', saved = m.saved.get(storageKey) as any;
+  saved.movingInstances = { jg: { '🪥漱': 'existing-full' } };
+  m.tasks.push(make('jg', '搬家-京广-11.20'), make('jg-stage', '出门前三天', 'jg'),
+    make('existing-full', '📦🪥漱', 'jg-stage'), make('sample-stage', '出门前一天🧳', 'move'),
+    make('new-sample', '🧳🪥漱（小样）', 'sample-stage'));
+  m.tasks.find(t => t.id === 'b0')!.title += '（正装）';
+  await syncTickTickTemplates(api, 'travel', 'conn');
+  const tree = (m.saved.get(storageKey) as any).movingTrees.jg;
+  expect(tree.taskIds.b0).toBe('existing-full');
+  expect(tree.taskIds['new-sample']).not.toBe('existing-full');
+  expect(m.tasks.find(t => t.id === 'existing-full')!.title).toBe('搬家-京广-11.20 · 📦🪥漱（正装）');
+  expect(m.tasks.filter(t => t.parentId === 'jg-stage' && t.title.includes('🪥漱'))).toHaveLength(1);
+  createTask.mockClear(); await syncTickTickTemplates(api, 'travel', 'conn'); expect(createTask).not.toHaveBeenCalled();
+});
+
 it('initializes differences from travel when timestamps are unavailable, as explicitly authorized', async () => {
   m.tasks.find(t => t.id === 'a0')!.content = 'travel';
   m.tasks.find(t => t.id === 'b0')!.content = 'moving';

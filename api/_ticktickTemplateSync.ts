@@ -11,13 +11,19 @@ const normalize = (s: string) => s.normalize('NFKC').replace(/[\uFE0E\uFE0F\s]/g
 const pinned = (title: string) => /📌[\uFE0E\uFE0F]?\s*$/u.test(title);
 const unpin = (title: string) => title.replace(/📌[\uFE0E\uFE0F]?\s*$/u, '').trimEnd();
 const prefix = (s: string) => s.match(/^[🎒🧳📦]+/u)?.[0] ?? '';
+const packingSuffix = (title: string) => title.match(/\s*(?:（(?:正装|小样)）|\((?:正装|小样)\))\s*$/u)?.[0] ?? '';
+const withoutPackingSuffix = (title: string) => title.slice(0, title.length - packingSuffix(title).length);
+const packingSpec = (title: string) => packingSuffix(unpin(title)).match(/正装|小样/u)?.[0];
+const inferredPackingSpec = (title: string) => packingSpec(title)
+  ?? (prefix(title) === '🧳' ? '小样' : prefix(title) === '📦' ? '正装' : undefined);
+const specialContainerKey = (key: string) => key === '白色行李袋' || key.startsWith('白色行李袋:');
 const shared = (t: TickTickTask, special: boolean, includePinned = false): Shared => ({
-  title: special ? '' : t.title.slice(prefix(t.title).length), content: t.content ?? '', desc: t.desc ?? '',
+  title: special ? '' : withoutPackingSuffix(t.title).slice(prefix(t.title).length), content: t.content ?? '', desc: t.desc ?? '',
   kind: t.kind ?? 'TEXT', items: (t.items ?? []).filter(i => includePinned || !pinned(i.title)).map(i => i.title),
 });
 const stageKey = (key: string) => key.startsWith('stage:');
 const sharedFor = (task: TickTickTask, key: string, includePinned = false): Shared => {
-  const value = shared(task, key === '白色行李袋', includePinned);
+  const value = shared(task, specialContainerKey(key), includePinned);
   return stageKey(key) ? { ...value, title: '', content: '', desc: '', kind: 'CHECKLIST' } : value;
 };
 
@@ -58,17 +64,39 @@ export function templatePairs(tasks: TickTickTask[], rootId: string, saved: Stat
   const children = roots.map(root => tasks.filter(t => t.parentId && byId.get(t.parentId)?.parentId === root));
   return Object.fromEntries(keys.flatMap(key => {
     const old = saved.pairs[key];
-    const pinnedMatches = children.map((list, side) => list.filter(t => pinned(t.title) && (t.id === old?.ids[side] || (key === '白色行李袋'
-      ? /^(?:📦|🧳【[⚪🤍]】)$/.test(normalize(unpin(t.title))) : normalize(t.title).includes(key)))));
-    if (pinnedMatches.some(list => list.length)) {
-      // A private category may exist on only one side; do not require or create its counterpart.
+    const previous = Object.entries(saved.pairs).filter(([name]) => name === key || name.startsWith(`${key}:`));
+    const matchesCategory = (task: TickTickTask, side: number) => {
+      if (previous.some(([, pair]) => pair.ids[side] === task.id)) return true;
+      const title = normalize(withoutPackingSuffix(unpin(task.title)));
+      return key === '白色行李袋'
+        ? side === 0 ? /^🧳【[⚪🤍]】$/.test(title) : /^(?:📦|🧳)$/.test(title)
+        : title.includes(key);
+    };
+    const candidates = children.map((list, side) => list.filter(task => matchesCategory(task, side)));
+    // A labelled category opts into independent full-size/sample pairs. Never
+    // reuse the legacy cross-container association while the second side is
+    // still being populated, or a later sync could overwrite the wrong kit.
+    if (candidates.some(list => list.some(task => packingSpec(task.title)))) {
+      return ['正装', '小样'].flatMap(spec => {
+        const matches = candidates.map(list => list.filter(task => inferredPackingSpec(task.title) === spec));
+        if (matches.some(list => list.some(task => pinned(task.title)))) return [];
+        if (matches.some(list => list.length > 1)) throw new Error(`模板同步：${key}（${spec}）有多个匹配`);
+        if (matches.some(list => list.length === 0)) return [];
+        const name = `${key}:${spec}`, ids: [string, string] = [matches[0][0].id, matches[1][0].id];
+        const prior = saved.pairs[name] ?? old;
+        const baseline = prior && equal(prior.ids, ids) && prior.baseline
+          ? { ...prior.baseline, title: withoutPackingSuffix(prior.baseline.title), items: prior.baseline.items.filter(title => !pinned(title)) }
+          : undefined;
+        return [[name, { ids, ...(baseline ? { baseline } : {}) }]];
+      });
+    }
+    if (candidates.some(list => list.some(task => pinned(task.title)))) {
+      // A private legacy category may exist on only one side; do not require its counterpart.
       return [];
     }
     const ids = children.map((list, side) => {
       if (old && list.some(t => t.id === old.ids[side])) return old.ids[side];
-      const matches = list.filter(t => key === '白色行李袋'
-        ? side === 0 ? /^🧳【[⚪🤍]】$/.test(normalize(t.title)) : normalize(t.title) === '📦'
-        : normalize(t.title).includes(key));
+      const matches = candidates[side];
       if (matches.length !== 1) throw new Error(`模板同步：${key} 缺失或有多个匹配`);
       return matches[0].id;
     }) as [string, string];
@@ -96,10 +124,11 @@ async function writeShared(api: TickTickApi, task: TickTickTask, value: Shared, 
     if (task[field] !== undefined) payload[field] = task[field];
   if (stageKey(key)) Object.assign(payload, { items, ...(items.length ? { kind: 'CHECKLIST' } : {}) });
   else Object.assign(payload, { content: value.content, desc: value.desc, kind: value.kind, items,
-    title: key === '白色行李袋' ? task.title : prefix(task.title) + value.title });
+    title: specialContainerKey(key) ? task.title : prefix(task.title) + value.title + packingSuffix(task.title) });
   await api.updateTask(task.id, payload);
   const verified = await api.getTask(task.projectId, task.id);
   if (!verified || !equal(sharedFor(verified, key, includePinned), value) || prefix(verified.title) !== prefix(task.title)
+    || packingSuffix(verified.title) !== packingSuffix(task.title)
     || verified.parentId !== task.parentId
     || stageKey(key) && ['title', 'content', 'desc'].some(field => verified[field as keyof TickTickTask] !== task[field as keyof TickTickTask]))
     throw new Error('模板同步回读校验失败');
@@ -199,8 +228,13 @@ export async function syncTickTickTemplates(api: TickTickApi, rootId: string, co
   for (const root of options.mode === 'dates' ? [] : movingRoots) {
     if (!movingTemplate) throw new Error('搬家模板缺失');
     const tree = saved.movingTrees[root.id] ??= { name: root.title, taskIds: {}, itemIds: {} };
+    // A specification migration replaces the active category pair, but legacy
+    // instance IDs still belong to its original moving-template task.
     const legacyTaskIds = Object.fromEntries(Object.entries(saved.movingInstances[root.id] ?? {})
-      .filter(([key]) => pairs[key]).map(([key, id]) => [pairs[key].ids[1], id]));
+      .flatMap(([key, id]) => {
+        const pair = saved.pairs[key] ?? pairs[key];
+        return pair ? [[pair.ids[1], id]] : [];
+      }));
     const parsed = movingDepartureDate(root.title, calendarDateInTimeZone(new Date().toISOString())!);
     const previous = saved.departureDates[root.id];
     const departureDate = previous?.suffix === root.title.trim().split('-').at(-1) ? previous.date : parsed;
