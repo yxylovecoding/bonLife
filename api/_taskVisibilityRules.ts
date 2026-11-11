@@ -44,6 +44,15 @@ export function locationTaskHidden(task: TickTickTask, locations: LocationVisibi
   return tags.length ? !tags.some(tag => locations.today.includes(tag)) : null;
 }
 export const visibilityRules: SchedulingRuleId[] = ['visibility-location', 'visibility-sleep', 'visibility-reading', 'visibility-hair', 'visibility-night', 'visibility-timed'];
+// Releasing an eligible location/time must not override the other's hidden hold.
+// Morning restoration likewise releases only its temporary sleep hold.
+export function visibilityReleaseBlocker(id: SchedulingRuleId, task: TickTickTask,
+  input: Parameters<typeof visibilityDecision>[2], enabled: readonly SchedulingRuleId[]): SchedulingRuleId | undefined {
+  const checks: SchedulingRuleId[] = id === 'visibility-location' ? ['visibility-timed']
+    : id === 'visibility-timed' ? ['visibility-location']
+    : id === 'visibility-sleep' ? visibilityRules.filter(rule => rule !== id) : [];
+  return checks.find(rule => enabled.includes(rule) && visibilityDecision(rule, task, input) === true);
+}
 export async function visibilityInputs(projectId: string, today: string, calendarState?: unknown) {
   const [journal, locations] = await Promise.all([
     kv.get<SleepTagJournal>(sleepTagStateKey(projectId)), readLocationVisibility(today, calendarState).catch(() => null),

@@ -94,6 +94,21 @@ export class RuleTaskDraft {
   committedValues() { return [...this.committed.values()].map(t => structuredClone(t)); }
   values() { return [...this.tasks.values()].map(t => structuredClone(t)); }
   dateOwner(taskId: string) { return this.owners.get(taskId)?.get('date'); }
+  // Re-evaluate successful visibility proposals against final task dates.
+  // Keep failed-rule protection and the explicit first-training reveal intact.
+  releaseVisibilityOwners(rules: ReadonlySet<SchedulingRuleId>) {
+    for (const owners of this.owners.values()) {
+      const owner = owners.get('hidden');
+      if (owner && rules.has(owner)) owners.delete('hidden');
+    }
+  }
+  claimVisibilityChange(id: SchedulingRuleId, taskId: string) {
+    const current = this.tasks.get(taskId)?.tags?.filter(isHiddenTag) ?? [];
+    const original = this.original.get(taskId)?.tags?.filter(isHiddenTag) ?? [];
+    // A refreshed no-op may still own a previously changed tag. Do not claim
+    // unchanged visibility: an independent budget hold must remain writable.
+    if (!same(current, original)) this.protect(id, [taskId], 'hidden');
+  }
   requireRule(id: SchedulingRuleId, taskIds: Iterable<string>) {
     for (const taskId of taskIds) {
       const rules = this.requiredRules.get(taskId) ?? new Set<SchedulingRuleId>();

@@ -1,5 +1,5 @@
 import { kv } from './_accountKv.js';
-import { visibilityInputs, visibilityRules, visibilityDecision } from './_taskVisibilityRules.js';
+import { visibilityInputs, visibilityRules, visibilityDecision, visibilityReleaseBlocker } from './_taskVisibilityRules.js';
 import { readSchedulingRules, RULE_RUN_KEY } from './_schedulingRules.js';
 import { hasHiddenTag } from './_ticktickHiddenTag.js';
 import type { TickTickTask } from './_ticktickTrips.js';
@@ -18,11 +18,15 @@ export async function inspectTickTickVisibility(tasks: TickTickTask[], options: 
     kv.get<string>(`ticktick:training-visible-day:v1:${options.connectionId}`),
   ]);
   const now = options.now ?? new Date();
+  const enabled = config.order.filter(id => visibilityRules.includes(id) && !config.removed?.includes(id));
   return tasks.map(task => {
-    const decisions = config.order.filter(id => visibilityRules.includes(id) && !config.removed?.includes(id))
+    const decisions = enabled
       .map(id => ({ rule: id, hidden: input.locations ? visibilityDecision(id, task, {
         ...input, now, timeZone: options.timeZone || 'Asia/Shanghai',
-      }) : null })).filter(item => item.hidden !== null);
+      }) : null })).filter(item => item.hidden !== null).map(item => ({ ...item,
+        ...(item.hidden === false ? { releaseBlockedBy: visibilityReleaseBlocker(item.rule, task,
+          { ...input, now, timeZone: options.timeZone || 'Asia/Shanghai' }, enabled) } : {}),
+      }));
     return { hidden: hasHiddenTag(task), priority: task.priority,
       trainingShownDate: typeof trainingShownDate === 'string' ? trainingShownDate : null,
       locationSourceAvailable: Boolean(input.locations), decisions,

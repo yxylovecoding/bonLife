@@ -145,6 +145,53 @@ describe('每天首次 Orche 显示 BonLog 今日训练', () => {
 });
 
 describe('统一显隐裁决', () => {
+  it.each(['full', 'hourly', 'visibility'] as const)('%s 地点与具体时刻同时满足才显示，切换优先级不绕过任一条件', async scope => {
+    vi.setSystemTime(new Date(`${day}T09:00:00+08:00`)); m.city = '广州';
+    config(['visibility-location', 'visibility-timed']);
+    const original = task('timed', { title: '广州出去玩儿', tags: ['广州', '当天', 'routine'], priority: 5,
+      isAllDay: false, startDate: `${day}T21:00:00+0800`, dueDate: `${day}T22:00:00+0800`,
+      repeatFlag: 'RRULE:FREQ=DAILY', reminders: ['TRIGGER:PT0S'] });
+    m.tasks = [structuredClone(original)];
+    await runRuleReplan({ scope });
+    expect(m.tasks[0]).toEqual({ ...original, tags: [...original.tags!, 'hidden'] });
+    expect(m.write).toHaveBeenCalledOnce();
+    await runRuleReplan({ scope }); expect(m.write).toHaveBeenCalledOnce();
+    vi.setSystemTime(new Date(`${day}T21:00:00+08:00`));
+    await runRuleReplan({ scope }); expect(m.tasks[0]).toEqual(original);
+    config(['visibility-timed', 'visibility-location']); m.city = '北京';
+    await runRuleReplan({ scope: 'visibility' }); expect(m.tasks[0].tags).toContain('hidden');
+    m.city = '广州'; await runRuleReplan({ scope: 'visibility' }); expect(m.tasks[0]).toEqual(original);
+  });
+  it('晨间仅释放临时隐藏，不抢占尚未到时的隐藏；删除定时规则后按地点显示', async () => {
+    vi.setSystemTime(new Date(`${day}T05:01:00+08:00`)); m.city = '广州';
+    config(['visibility-sleep', 'visibility-location', 'visibility-timed']);
+    m.tasks = [task('timed', { tags: ['广州', 'hidden', 'routine'], isAllDay: false, startDate: `${day}T22:00:00+0800` })];
+    m.data.set('journal', { timed: { projectId: 'life', addedOn: day, phase: 'added' } });
+    await runRuleReplan({ scope: 'visibility' });
+    expect(m.tasks[0].tags).toEqual(['广州', 'hidden', 'routine']); expect(m.write).not.toHaveBeenCalled();
+    m.data.set('ticktick:rules:v1', removeSchedulingRule(readRuleConfig(m.data.get('ticktick:rules:v1')), 'visibility-timed'));
+    await runRuleReplan({ scope: 'visibility' }); expect(m.tasks[0].tags).toEqual(['广州', 'routine']);
+  });
+  it('最终改期后重新裁决显隐，不沿用改期前的显示归属', async () => {
+    config(['visibility-location', 'visibility-timed', 'always-today']); m.city = '广州';
+    m.data.set('app-config', { config: { schoolCity: GUANGZHOU, homeCity: GUANGZHOU } });
+    vi.setSystemTime(new Date(`${day}T09:00:00+08:00`));
+    m.tasks = [task('timed', { tags: ['广州', 'always-today', 'hidden', 'routine'], priority: 5,
+      isAllDay: false, startDate: '2026-11-02T22:00:00+0800', dueDate: '2026-11-02T22:00:00+0800' })];
+    await runRuleReplan({ scope: 'hourly' });
+    expect(m.tasks[0].startDate).toContain(`${day}T22:00:00`);
+    expect(m.tasks[0].tags).toContain('hidden'); expect(m.write).toHaveBeenCalledOnce();
+  });
+  it('定时前序未完成时地点不得替它显示，读取失败也不改变标签', async () => {
+    vi.setSystemTime(new Date(`${day}T09:00:00+08:00`)); m.city = '广州';
+    config(['visibility-location', 'exercise', 'visibility-timed'], { 'visibility-timed': ['exercise'] });
+    m.tasks = [task('timed', { tags: ['广州', 'hidden'], isAllDay: false, startDate: `${day}T22:00:00+0800` })];
+    const result = await runRuleReplan({ scope: 'visibility' });
+    expect(status(result, 'visibility-timed').status).toBe('skipped');
+    expect(m.tasks[0].tags).toEqual(['广州', 'hidden']); expect(m.write).not.toHaveBeenCalled();
+    m.locationFailure = true;
+    await runRuleReplan({ scope: 'visibility' }); expect(m.write).not.toHaveBeenCalled();
+  });
   it.each(['full', 'hourly', 'visibility'] as const)('%s 使用 hidden，兼容清理旧标签且未变化不重写', async scope => {
     config(['visibility-location', 'visibility-reading']);
     const original = task('r', { title: '阅读', tags: ['广州', 'routine', 'bon-hidden', 'hidden'],
@@ -732,7 +779,7 @@ describe('远端新增专项接入同一裁决', () => {
     })];
     const result = await runRuleReplan({ scope: 'full' });
     expect(status(result, 'vehicle-pickup').status).toBe('success');
-    expect(m.tasks.find(t => t.id === 'pickup')).toMatchObject({ startDate: '2026-11-04T07:20:00+0800', tags: ['居', '北京', '当天'] });
+    expect(m.tasks.find(t => t.id === 'pickup')).toMatchObject({ startDate: '2026-11-04T07:20:00+0800', tags: ['居', '北京', '当天', 'hidden'] });
     expect(m.tasks.filter(t => t.title === '接电动车')).toHaveLength(1);
   });
   it.each(['电动车充电', '接电动车'])('当天放弃且已无待办的 %s 不重新补建', async title => {

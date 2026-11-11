@@ -9,7 +9,7 @@ import { readSchedulingRules, executeRuleGraph, schedulingRuleFailureReason, RUL
 import { RuleTaskDraft, ruleTaskFailureReason } from './_ruleTaskDraft.js';
 import { precedes, withRulePolicy, withActiveRule } from './_rulePolicy.js';
 import { acquireTickTickLock, releaseTickTickLock } from './_ticktickLock.js';
-import { visibilityInputs, visibilityRules, visibilityDecision } from './_taskVisibilityRules.js';
+import { visibilityInputs, visibilityRules, visibilityDecision, visibilityReleaseBlocker } from './_taskVisibilityRules.js';
 import { sleepWindow, sleepTagStateKey } from './_ticktickSleepTags.js';
 import { hasHiddenTag } from './_ticktickNightRoutine.js';
 import { withHiddenTag } from './_ticktickHiddenTag.js';
@@ -146,6 +146,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       const visibilityOwners: Record<string, SchedulingRuleId> = {};
       const visibilityReports: Partial<Record<SchedulingRuleId, Pick<SchedulingRuleResult, 'matched' | 'conflicts'>>> = {};
       const visibilityDecisions = new Map<string, boolean>();
+      const enabledVisibility = config.order.filter(id => visibilityRules.includes(id) && !config.removed?.includes(id));
       const handlers: Partial<Record<SchedulingRuleId, RuleHandler>> = {};
       const calendarDependent = new Set<SchedulingRuleId>();
       const plan = (id: SchedulingRuleId, callback: (branch: ReturnType<RuleTaskDraft['branch']>) => Promise<void>, needsHistory = true) => {
@@ -164,11 +165,14 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             const hidden = visibilityDecision(id, task, { now, timeZone: connection.timeZone || 'Asia/Shanghai', ...visibility });
             if (hidden === null) continue;
             report.matched++;
+            if (!hidden && visibilityReleaseBlocker(id, task,
+              { now, timeZone: connection.timeZone || 'Asia/Shanghai', ...visibility }, enabledVisibility)) continue;
             if (visibilityOwners[task.id]) {
               if (hidden !== visibilityDecisions.get(task.id)) report.conflicts.push({ taskId: task.id, winner: visibilityOwners[task.id], field: 'hidden' });
               continue;
             }
             visibilityOwners[task.id] = id; visibilityDecisions.set(task.id, hidden);
+            draft.claimVisibilityChange(id, task.id);
             if (hidden && id === 'visibility-sleep' && !hasHiddenTag(task)) journal[task.id] = { projectId: task.projectId, addedOn: today, phase: 'adding' };
             // A time/location becoming eligible cannot clear a separate budget hold.
             const budgetHold = budgetHidden[task.id] && !config.removed?.includes('daily-plan') && hasHiddenTag(task);
@@ -489,8 +493,12 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           branch.reject(); vehicleResult.status = 'failed'; vehicleResult.reason = schedulingRuleFailureReason(error); propagate();
         }
       }
-      for (const id of visibilityRules) if (run.results.find(r => r.id === id)?.status === 'success') {
-        for (const taskId of Object.keys(visibilityOwners)) if (visibilityOwners[taskId] === id) delete visibilityOwners[taskId];
+      const refreshedVisibility = new Set(visibilityRules.filter(id => run.results.find(r => r.id === id)?.status === 'success'));
+      draft.releaseVisibilityOwners(refreshedVisibility);
+      for (const id of refreshedVisibility) {
+        for (const taskId of Object.keys(visibilityOwners)) if (visibilityOwners[taskId] === id) {
+          delete visibilityOwners[taskId]; visibilityDecisions.delete(taskId);
+        }
       }
       for (const id of config.order.filter(id => visibilityRules.includes(id))) if (run.results.find(r => r.id === id)?.status === 'success') {
         const refreshed = await withActiveRule(id, handlers[id]!);

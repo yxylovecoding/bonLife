@@ -34,3 +34,13 @@ it('地点来源失败时不报告确定的当前决定，未匹配时不额外�
   m.inputs.mockResolvedValue({ journal: {}, locations: null });
   expect((await inspectTickTickVisibility([task], options))[0]).toMatchObject({ locationSourceAvailable: false, decisions: [] });
 });
+it('诊断保留原始条件，并标明地点显示仍须等待具体时刻', async () => {
+  m.rules.mockResolvedValue({ order: ['visibility-location', 'visibility-timed'], removed: [] });
+  m.inputs.mockResolvedValue({ journal: {}, locations: { names: ['广州'], today: ['广州'], unknown: false } });
+  const result = await inspectTickTickVisibility([{ ...task, title: '广州出去玩儿', tags: ['广州'],
+    isAllDay: false, startDate: '2026-11-08T21:00:00+0800' }], options);
+  expect(result[0].decisions).toEqual([
+    { rule: 'visibility-location', hidden: false, releaseBlockedBy: 'visibility-timed' },
+    { rule: 'visibility-timed', hidden: true },
+  ]);
+});
