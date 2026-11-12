@@ -33,6 +33,7 @@ export const SCHEDULING_RULES = [
   ['wishes', '心愿准备', '独立心愿按截止日前七个自然月生成准备阶段及后代。', 'generation'],
   ['period-reminder', '月经提醒', '预计开始前两天提醒，同一周期已完成后不重复补建。', 'generation'],
   ['vehicle-pickup', '充电次日接车', '充电固定一小时，接车优先调整原待办；缺少时补齐当天、活标签的待办。', 'generation'],
+  ['rain-reminder', '雨天关窗', '早晨首轮按 boncal 当天城市查雨，有雨生成 08:00 关窗提醒，同日不重复。', 'generation'],
   ['outlook-laundry', 'Outlook 洗衣', '跟随最终洗衣日期，预约 50 分钟；同日手动改时保留，缺失时查重恢复。', 'outlook'],
   ['outlook-charging', 'Outlook 充电', '与电动车充电待办的开始、结束时间一致。', 'outlook'],
   ['outlook-hair', 'Outlook 洗头', '跟随洗头待办日期，默认 22:00–22:30；同日手动改时保留。', 'outlook'],
@@ -78,7 +79,7 @@ function initialGroups(order: SchedulingRuleId[]): SchedulingRuleGroup[] {
   const sections = ['日历场景', '待办显隐', '模板整理', '任务排期', '待办生成', 'Outlook 日程'];
   const section = (id: SchedulingRuleId) => {
     const index = ruleIds.indexOf(id);
-    return index < 4 ? 0 : index < 10 ? 1 : index < 13 ? 2 : index < 30 ? 3 : index < 34 ? 4 : 5;
+    return index < 4 ? 0 : index < 10 ? 1 : index < 13 ? 2 : index < 30 ? 3 : index < 35 ? 4 : 5;
   };
   const groups: SchedulingRuleGroup[] = [], counts = new Map<number, number>();
   let previous = -1;

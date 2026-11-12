@@ -3506,7 +3506,7 @@ export default function CalendarPage() {
       <div className="calendar-page-header" style={{ margin: '0 0 16px' }}>
         <div className="calendar-header-toolbar">
           <h1 style={{ fontSize: 'clamp(18px, 4.8vw, 22px)', fontWeight: 700, margin: 0, whiteSpace: 'nowrap', flexShrink: 0 }}>
-            {tab === 'month' ? '日历标记' : '历史记录'}
+            {tab === 'month' ? 'boncal' : '历史记录'}
           </h1>
           <div className="calendar-header-actions">
             <div className="calendar-header-imports">

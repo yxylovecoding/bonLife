@@ -43,6 +43,7 @@ export async function saveSchedulingRules(value: unknown) {
 
 export function schedulingRuleFailureReason(error: unknown): string {
   const message = error instanceof Error ? error.message : '';
+  if (message === 'boncal 当天城市未确认' || message === '当天降雨预报未确认') return message;
   if (message === '待办快照中不存在该任务') return '已关联待办不在本轮快照中，已保留原安排';
   const status = message.match(/^TickTick (\d{3})\b/)?.[1];
   if (status) return `TickTick 读取失败（HTTP ${status}），已保留原安排`;

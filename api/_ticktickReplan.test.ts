@@ -9,7 +9,7 @@ import type { TickTickTask } from './_ticktickTrips';
 
 const m = vi.hoisted(() => ({ data: new Map<string, any>(), tasks: [] as TickTickTask[], history: [] as TickTickTask[], abandoned: [] as TickTickTask[], abandonedRead: vi.fn(),
   get: vi.fn(), write: vi.fn(), create: vi.fn(), historyRead: vi.fn(), snapshot: vi.fn(), fullOutlook: vi.fn(), saveOutlook: vi.fn(),
-  acquire: vi.fn(), release: vi.fn(), laundry: vi.fn(), exercise: vi.fn(), hairOutlook: vi.fn(), chargingOutlook: vi.fn(),
+  acquire: vi.fn(), release: vi.fn(), rain: vi.fn(), laundry: vi.fn(), exercise: vi.fn(), hairOutlook: vi.fn(), chargingOutlook: vi.fn(),
   trip: vi.fn(), wish: vi.fn(), period: vi.fn(), pickupOutlook: vi.fn(), tagsRead: vi.fn(), locationFailure: false, city: '北京' }));
 vi.mock('./_accountKv.js', () => ({ kv: {
   get: async (key: string) => structuredClone(m.data.get(key) ?? null), hgetall: async (key: string) => structuredClone(m.data.get(key) ?? null),
@@ -28,6 +28,7 @@ vi.mock('./_outlookCharging.js', () => ({ syncChargingOutlook: m.chargingOutlook
 vi.mock('./_outlookLaundry.js', () => ({ syncLaundryOutlook: async () => ({ created: 0, updated: 0 }) }));
 vi.mock('./_outlookRecurringTaskEvents.js', () => ({ syncRecurringTaskOutlook: m.pickupOutlook }));
 vi.mock('./_ticktickPeriodPrediction.js', () => ({ syncPeriodPredictionTask: m.period }));
+vi.mock('./_ticktickRainReminder.js', async original => ({ ...await original<typeof import('./_ticktickRainReminder')>(), planRainReminder: m.rain }));
 vi.mock('./_ticktickTrips.js', async original => ({ ...await original<typeof import('./_ticktickTrips')>(),
   decryptTickTickToken: () => 'test-token', readAllTickTickTasks: async (api: any, statuses: number[]) => api.filterTasks
     ? api.filterTasks([], statuses) : structuredClone(m.tasks.filter(t => statuses.includes(t.status ?? 0))),
@@ -858,4 +859,29 @@ describe('当天放弃的重复任务不重新安排', () => {
     await runRuleReplan({ scope: 'full' });
     expect(m.tasks[0].dueDate?.slice(0, 10)).toBe('2026-11-06');
   });
+});
+
+it.each(['full', 'hourly'] as const)('%s 接入雨天规则与统一回读，关窗固定时刻不被普通轮换顺延', async scope => {
+  vi.setSystemTime(new Date(`${day}T07:01:00+08:00`));
+  m.rain.mockImplementation(async (api, options) => {
+    if (options.tasks.some((t: TickTickTask) => t.title === '关窗')) return;
+    await api.createTask({ projectId: options.projectId, title: '关窗', tags: ['活', '当天'],
+      startDate: `${day}T08:00:00+0800`, dueDate: `${day}T08:00:00+0800`, isAllDay: false, timeZone: 'Asia/Shanghai', reminders: ['TRIGGER:PT0S'] });
+    options.deferState(() => { m.data.set('rain-confirmed', true); });
+  });
+  const first = await runRuleReplan({ scope });
+  expect(status(first, 'rain-reminder').status).toBe('success'); expect(m.data.get('rain-confirmed')).toBe(true);
+  const saved = structuredClone(m.tasks.find(t => t.title === '关窗')!);
+  expect(m.get).toHaveBeenCalledWith('life', saved.id);
+  vi.setSystemTime(new Date(`${day}T21:00:00+08:00`));
+  m.data.set(DAILY_PLAN_SETTINGS_KEY, { budgetMinutes: 10 });
+  await runRuleReplan({ scope });
+  expect(m.tasks.find(t => t.id === saved.id)).toMatchObject({ startDate: saved.startDate, dueDate: saved.dueDate, reminders: ['TRIGGER:PT0S'] });
+  expect(m.create).toHaveBeenCalledOnce();
+});
+
+it('独立显隐与删除雨天规则不调用关窗生成', async () => {
+  await runRuleReplan({ scope: 'visibility' }); expect(m.rain).not.toHaveBeenCalled();
+  m.data.set('ticktick:rules:v1', removeSchedulingRule(readRuleConfig(defaultRuleConfig()), 'rain-reminder'));
+  await runRuleReplan({ scope: 'full' }); expect(m.rain).not.toHaveBeenCalled();
 });

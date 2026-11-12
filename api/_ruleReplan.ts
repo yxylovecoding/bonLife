@@ -25,6 +25,7 @@ import { syncExerciseSchedule, isExerciseTask } from './_ticktickExercise.js';
 import { syncLaundrySchedule, isLaundryTask } from './_ticktickLaundry.js';
 import { postponeSwimmingTasks, readHairWashSchedule, readSwimmingCycle } from './_lifeSwimming.js';
 import { syncPeriodPredictionTask } from './_ticktickPeriodPrediction.js';
+import { isRainReminder, planRainReminder } from './_ticktickRainReminder.js';
 import { syncLaundryOutlook } from './_outlookLaundry.js';
 import { syncChargingOutlook } from './_outlookCharging.js';
 import { syncHairWashOutlook } from './_outlookHairWash.js';
@@ -129,6 +130,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       let added = true;
       while (added) { added = false; for (const task of tasks) if (task.parentId && movingTemplateIds.has(task.parentId) && !movingTemplateIds.has(task.id)) { movingTemplateIds.add(task.id); added = true; } }
       for (const id of movingTemplateIds) excluded.add(id);
+      for (const task of tasks) if (isRainReminder(task)) excluded.add(task.id);
       const trips = buildTripSourcesFromSyncState(calendarState, tripState);
       console.info('[scheduling-ready]', JSON.stringify({ scope: options.scope, phase: 'template' }));
       const draft = new RuleTaskDraft(api, tasks, abandonedToday);
@@ -185,6 +187,16 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         }, false);
       }
       const sleeping = Boolean(options.scheduled && sleepWindow(now).hidden);
+      if (options.scope !== 'visibility' && !options.specialty) {
+        plan('rain-reminder', async branch => {
+          await planRainReminder(branch.api, { connectionId, projectId: connection.projectId,
+            tasks: draft.values(), completedTasks: state.history, calendarState, now,
+            deferState: save => draft.saveAfterCommit('rain-reminder', save) });
+          const reminders = draft.values().filter(isRainReminder);
+          for (const task of reminders) excluded.add(task.id);
+          branch.claimDates(reminders.map(task => task.id));
+        });
+      }
       if (options.scope !== 'visibility' && !sleeping) {
         handlers['eye-drops'] = async () => {
           // Leave stale slots open for always-today. Deduplicate once the dates and visibility are known.
