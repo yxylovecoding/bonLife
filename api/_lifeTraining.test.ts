@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { collectOutlookAerobicCompletions, readTrainingSource, selectTrainingTasks, syncTrainingSource, trainingCompletions, trainingTask, TRAINING_SOURCE_KEY } from './_lifeTraining';
+import { readTrainingSource, selectTrainingTasks, syncTrainingSource, trainingCompletions, trainingTask, TRAINING_SOURCE_KEY } from './_lifeTraining';
 import { encryptTickTickToken, TICKTICK_CONNECTION_KEY, type TickTickTask } from './_ticktickTrips';
-import { encryptOutlookConnection } from './_outlookCalendar';
-import { OUTLOOK_CONNECTION_KEY } from './_outlookSync';
 import { entriesKey, LIFE_SETTINGS_KEY, LIFE_TRAINING_ENTRIES_KEY } from './_bonLife';
 import { createHash } from 'node:crypto';
 import { DAILY_PLAN_KEY } from './_ticktickDailyPlan';
@@ -74,7 +72,7 @@ describe('TickTick 训练来源', () => {
     expect(() => trainingTask(task({ timeZone: 'invalid' }), 2026)).toThrow();
   });
   it('没有经期游泳冲突时只读 TickTick，合并清单详情，保存最小快照', async () => {
-    const result = await syncTrainingSource(2026);
+    const result = await syncTrainingSource(2026, { lockHeld: true });
     expect(result.tasks).toHaveLength(1); expect(result.tasks[0].notes).toBe('轻量哑铃');
     expect(result.connected).toBe(true); expect(result.syncedAt).toBeTruthy();
     const calls = vi.mocked(fetch).mock.calls;
@@ -98,14 +96,14 @@ describe('TickTick 训练来源', () => {
       const original = fetch;
       vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => url.endsWith('/task/completed')
         ? new Response(JSON.stringify([task({ title: '有氧-运动💪🏻是生活的第一个锚点🪝', status: 2, completedTime: '2026-10-13T01:00:00Z' })])) : original(url, options)));
-      expect((await syncTrainingSource(2026)).completions).toEqual([
+      expect((await syncTrainingSource(2026, { lockHeld: true })).completions).toEqual([
         { project: '上半身', date: '2026-08-01' }, { project: '有氧', date: '2026-10-13' },
       ]);
       const query = vi.mocked(fetch).mock.calls.find(([url]) => String(url).endsWith('/task/completed'))!;
       expect(Date.parse(JSON.parse(query[1]!.body as string).startDate)).toBe(Date.parse('2026-10-13T00:00:00Z'));
       data.delete(DAILY_PLAN_KEY);
       vi.stubGlobal('fetch', original);
-      expect((await syncTrainingSource(2026)).completions).toHaveLength(2);
+      expect((await syncTrainingSource(2026, { lockHeld: true })).completions).toHaveLength(2);
     } finally { vi.useRealTimers(); }
   });
   it('跨年索引与旧记录共同读取，其他健康字段不混进训练来源', async () => {
@@ -117,7 +115,7 @@ describe('TickTick 训练来源', () => {
   it('不同账户的每日历史不能影响新连接的轮换', async () => {
     data.set(DAILY_PLAN_KEY, { connectionId: 'another-account', historyThrough: new Date().toISOString(),
       history: [task({ status: 2, completedTime: '2026-01-01T01:00:00Z' })] });
-    expect((await syncTrainingSource(2026)).completions).toEqual([]);
+    expect((await syncTrainingSource(2026, { lockHeld: true })).completions).toEqual([]);
   });
   it('同步洗头日期和完成时间重复作为单独来源，不混入训练项目或丢失已洗头日期', async () => {
     const original = fetch;
@@ -126,16 +124,16 @@ describe('TickTick 训练来源', () => {
       if (url.endsWith('/task/completed')) return new Response(JSON.stringify([task({ title: '洗头', status: 2, completedTime: '2026-10-03T17:00:00Z' })]));
       return original(url, options);
     }));
-    const result = await syncTrainingSource(2026);
+    const result = await syncTrainingSource(2026, { lockHeld: true });
     expect(result.hairWash).toEqual({ scheduledDate: '2026-10-08', repeatFlag: 'FREQ=DAILY;INTERVAL=2', repeatFrom: '1', completedDates: ['2026-10-04'] });
     expect(result.tasks.map(task => task.name)).toEqual(['上半身']);
     expect(result.completions).toEqual([]);
   });
   it('同步失败和连接切换时保留原计划，错误中不泄露令牌', async () => {
-    await syncTrainingSource(2026);
+    await syncTrainingSource(2026, { lockHeld: true });
     const saved = data.get(TRAINING_SOURCE_KEY);
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('private-token'); }));
-    await expect(syncTrainingSource(2026)).rejects.toThrow('游泳待办顺延失败');
+    await expect(syncTrainingSource(2026, { lockHeld: true })).rejects.toThrow('已保留原计划');
     expect(data.get(TRAINING_SOURCE_KEY)).toEqual(saved);
     data.set(TICKTICK_CONNECTION_KEY, { encryptedToken: encryptTickTickToken('other-token', 'secret') });
     expect((await readTrainingSource(2026)).tasks).toEqual([]);
@@ -144,12 +142,12 @@ describe('TickTick 训练来源', () => {
   });
   it('较新同步或断开连接导致的提交冲突不会报告成功', async () => {
     evalMock.mockResolvedValue(0);
-    await expect(syncTrainingSource(2026)).rejects.toThrow('已保留原计划');
+    await expect(syncTrainingSource(2026, { lockHeld: true })).rejects.toThrow('已保留原计划');
   });
   it('未来游泳顺延，重复日期去重且跨年不遗漏；其他训练不受影响', async () => {
     vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-01T00:00:00Z'));
     try {
-      await syncTrainingSource(2026);
+      await syncTrainingSource(2026, { lockHeld: true });
       const snapshot = data.get(TRAINING_SOURCE_KEY);
       const swim = task({ title: '游泳-运动💪🏻是生活的第一个锚点🪝', startDate: '2026-12-29', repeatFlag: 'FREQ=DAILY;INTERVAL=2;COUNT=5' });
       const cycle = { ...DEFAULT_CYCLE, lastPeriodStart: '2026-12-29' };
@@ -162,107 +160,4 @@ describe('TickTick 训练来源', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  describe('Outlook「干」日历额外注入有氧完成', () => {
-    const WORK_URL = 'https://outlook.office365.com/owa/calendar/private-work/published/calendar.ics';
-    const ics = (events: { title: string; start: string; end: string; allDay?: boolean }[]) => [
-      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Test//EN',
-      ...events.flatMap(({ title, start, end, allDay }) => ['BEGIN:VEVENT', `SUMMARY:${title}`,
-        allDay ? `DTSTART;VALUE=DATE:${start.replace(/-/g, '')}` : `DTSTART:${start.replace(/[-:]/g, '')}Z`,
-        allDay ? `DTEND;VALUE=DATE:${end.replace(/-/g, '')}` : `DTEND:${end.replace(/[-:]/g, '')}Z`,
-        `UID:${title}-${start}@test`, 'END:VEVENT']),
-      'END:VCALENDAR', '',
-    ].join('\r\n');
-    const setupOutlook = (icsText: string) => {
-      data.set(OUTLOOK_CONNECTION_KEY, { id: 'conn-1', encrypted: encryptOutlookConnection({
-        playUrl: '', classUrl: '', sources: [{ name: '干', url: WORK_URL, kind: 'work' }],
-        policy: 'manual', rules: { homeTitles: [], ignoredPlayTitles: [] },
-      }, 'secret') });
-      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-        if (url === WORK_URL) return new Response(icsText);
-        throw new Error(`unexpected request: ${url}`);
-      }));
-    };
-
-    it('识别游泳/爬坡/跑步/骑行/HIIT 关键词，游泳保留项目名，其余归入「有氧」分类', async () => {
-      setupOutlook(ics([
-        { title: '傍晚去游泳', start: '2026-10-05', end: '2026-10-06', allDay: true },
-        { title: '爬坡训练', start: '2026-10-06', end: '2026-10-07', allDay: true },
-        { title: '晨跑步', start: '2026-10-07T22:30:00', end: '2026-10-07T23:15:00' },
-        { title: '骑行通勤', start: '2026-10-08', end: '2026-10-09', allDay: true },
-        { title: 'HIIT 燃脂', start: '2026-10-09', end: '2026-10-10', allDay: true },
-        { title: '普通会议', start: '2026-10-05', end: '2026-10-06', allDay: true },
-      ]));
-      const result = await collectOutlookAerobicCompletions('2026-10-09');
-      expect(result).toEqual(expect.arrayContaining([
-        { project: '游泳', date: '2026-10-05' },
-        { project: '有氧', date: '2026-10-06' },
-        { project: '有氧', date: '2026-10-08' },
-        { project: '有氧', date: '2026-10-09' },
-      ]));
-      // 定时事件 UTC 22:30 落在 Asia/Shanghai 10-08。
-      expect(result).toContainEqual({ project: '有氧', date: '2026-10-08' });
-      // 普通会议不命中。
-      expect(result.filter((c) => c.project !== '游泳' && c.project !== '有氧')).toEqual([]);
-      // 未来事件不记入（10-09 之后）。
-      expect(result.some((c) => c.date > '2026-10-09')).toBe(false);
-    });
-
-    it('同一事件同时包含游泳和爬坡时，两类都注入；跨天全天事件按天展开', async () => {
-      setupOutlook(ics([
-        { title: '周末游泳 + 爬坡巡回', start: '2026-10-03', end: '2026-10-05', allDay: true },
-      ]));
-      const result = await collectOutlookAerobicCompletions('2026-10-09');
-      expect(result).toEqual(expect.arrayContaining([
-        { project: '游泳', date: '2026-10-03' }, { project: '有氧', date: '2026-10-03' },
-        { project: '游泳', date: '2026-10-04' }, { project: '有氧', date: '2026-10-04' },
-      ]));
-      expect(result.some((c) => c.date === '2026-10-05')).toBe(false); // 全天 DTEND 不含端。
-    });
-
-    it('没有 Outlook 连接 / 没有「干」日历时返回空数组', async () => {
-      expect(await collectOutlookAerobicCompletions('2026-10-09')).toEqual([]);
-      data.set(OUTLOOK_CONNECTION_KEY, { id: 'conn-2', encrypted: encryptOutlookConnection({
-        playUrl: '', classUrl: '', sources: [{ name: '玩', url: WORK_URL, kind: 'play' }],
-        policy: 'manual', rules: { homeTitles: [], ignoredPlayTitles: [] },
-      }, 'secret') });
-      expect(await collectOutlookAerobicCompletions('2026-10-09')).toEqual([]);
-    });
-
-    it('ICS 拉取失败时降级为空数组，不抛错', async () => {
-      data.set(OUTLOOK_CONNECTION_KEY, { id: 'conn-3', encrypted: encryptOutlookConnection({
-        playUrl: '', classUrl: '', sources: [{ name: '干', url: WORK_URL, kind: 'work' }],
-        policy: 'manual', rules: { homeTitles: [], ignoredPlayTitles: [] },
-      }, 'secret') });
-      vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network'); }));
-      expect(await collectOutlookAerobicCompletions('2026-10-09')).toEqual([]);
-    });
-
-    it('syncTrainingSource 会把 Outlook 命中合并进 completions（游泳 + 有氧 并存且 dedup）', async () => {
-      setupOutlook(ics([
-        { title: '去游泳', start: '2026-10-08', end: '2026-10-09', allDay: true },
-        { title: '跑步', start: '2026-10-08', end: '2026-10-09', allDay: true },
-      ]));
-      vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-09T12:00:00Z'));
-      try {
-        // fetch 已被 setupOutlook 覆盖，补齐 TickTick 请求：
-        const outlookFetch = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>);
-        outlookFetch.mockImplementation(async (url: string) => {
-          if (url === WORK_URL) return new Response(ics([
-            { title: '去游泳', start: '2026-10-08', end: '2026-10-09', allDay: true },
-            { title: '跑步', start: '2026-10-08', end: '2026-10-09', allDay: true },
-          ]));
-          if (url.endsWith('/project')) return new Response(JSON.stringify([{ id: 'play', name: '玩' }]));
-          if (url.endsWith('/filter')) return new Response('[]');
-          if (url.endsWith('/task/completed')) return new Response('[]');
-          if (url.endsWith('/inbox/data')) return new Response(JSON.stringify({ project: { id: 'inbox-real' }, tasks: [] }));
-          if (url.endsWith('/play/data')) return new Response(JSON.stringify({ tasks: [] }));
-          throw new Error(`unexpected: ${url}`);
-        });
-        const result = await syncTrainingSource(2026);
-        expect(result.completions).toEqual(expect.arrayContaining([
-          { project: '游泳', date: '2026-10-08' }, { project: '有氧', date: '2026-10-08' },
-        ]));
-      } finally { vi.useRealTimers(); }
-    });
-  });
 });

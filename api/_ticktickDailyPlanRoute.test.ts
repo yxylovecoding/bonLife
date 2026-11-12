@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import handler from './ticktick-trips';
 import { defaultRuleConfig } from '../src/utils/schedulingRules';
+import * as calendarTraining from './_lifeCalendarTraining';
 import { RULE_CONFIG_KEY } from './_schedulingRules';
 const m = vi.hoisted(() => ({ data: new Map<string, any>(), auth: true, engine: vi.fn(), hourly: vi.fn(), details: vi.fn(), dispatch: vi.fn(), archive: vi.fn() }));
 vi.mock('./_accountRoute.js', () => ({ withAccountScope: (value: unknown) => value }));
@@ -72,6 +73,29 @@ describe('同步入口与保护', () => {
   it('小时与完整同步入口保持分离', async () => {
     expect((await request('POST', 'replan-today')).status).toBe(200); expect(m.hourly).toHaveBeenCalledOnce(); expect(m.engine).not.toHaveBeenCalled();
     await request('POST'); expect(m.engine).toHaveBeenCalledWith({ scope: 'full', allowDisconnected: false });
+  });
+  it('23:01 小时 Orche 导入运动，白天和休息时段不读取', async () => {
+    const sync = vi.spyOn(calendarTraining, 'syncCalendarTraining').mockResolvedValue({ connected: false });
+    try {
+      await request('GET', 'hourly-replan', undefined, true);
+      expect(sync).not.toHaveBeenCalled();
+      vi.setSystemTime(new Date('2026-11-03T23:01:00+0800'));
+      expect((await request('GET', 'hourly-replan', undefined, true)).status).toBe(200);
+      expect(sync).toHaveBeenCalledOnce();
+      vi.setSystemTime(new Date('2026-11-04T04:00:00+0800'));
+      await request('GET', 'hourly-replan', undefined, true);
+      expect(sync).toHaveBeenCalledOnce();
+    } finally { sync.mockRestore(); }
+  });
+  it('晚间运动导入失败仍运行独立排程，但不报告成功', async () => {
+    const sync = vi.spyOn(calendarTraining, 'syncCalendarTraining').mockRejectedValue(new Error('private calendar'));
+    try {
+      vi.setSystemTime(new Date('2026-11-03T23:01:00+0800'));
+      const result = await request('GET', 'hourly-replan', undefined, true);
+      expect(result).toMatchObject({ status: 502, body: { ok: false, failure: { stage: 'completion-archive' } } });
+      expect(m.hourly).toHaveBeenCalledWith({ scheduled: true });
+      expect(JSON.stringify(result)).not.toContain('private calendar');
+    } finally { sync.mockRestore(); }
   });
   it('后台归档失败仍完成独立排程，并报告归档失败', async () => {
     m.archive.mockRejectedValue(new Error('private archive')); const spy = vi.spyOn(console, 'error').mockImplementation(() => {});

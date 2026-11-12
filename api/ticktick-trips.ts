@@ -13,6 +13,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { TickTickConnection, TickTickTripSyncState } from './_ticktickTrips.js';
 import { availabilityProfile } from './_dailyAvailability.js';
 import { schedulingFailure } from './_schedulingFailure.js';
+import { isFinalTrainingRound, syncCalendarTraining } from './_lifeCalendarTraining.js';
 
 const CONNECTION_KEY = 'ticktick:connection:v1';
 const DAILY_SPECIAL_KEY = 'ticktick:daily-special-success:v1';
@@ -258,16 +259,24 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     }
     if (req.query?.action === 'hourly-replan') {
       if (!isCron) return res.status(403).json({ error: 'cron authorization required' });
+      let trainingImportFailed = false;
+      if (isFinalTrainingRound()) {
+        try { await syncCalendarTraining(); } catch { trainingImportFailed = true; }
+      }
+      const respond = (status: number, result: Record<string, unknown>) => trainingImportFailed
+        ? res.status(502).json({ ...result, ok: false, error: '运动日程同步失败，已保留历史',
+          failure: { stage: 'completion-archive', retryable: false } })
+        : res.status(status).json(result);
       if (await needsFirstDailySync()) {
         const result = await runSync(true);
         const failed = specialSyncFailed(result);
-        return res.status(result.busy ? 202 : failed ? 502 : 200).json({ ok: !result.busy && !failed, ...result,
+        return respond(result.busy ? 202 : failed ? 502 : 200, { ok: !result.busy && !failed, ...result,
           ...(failed ? { error: '专项待办或 Outlook 日程同步失败' } : {}) });
       }
       const { replanRemainingToday } = await import('./_ticktickReplan.js');
       const result = await replanRemainingToday({ scheduled: true });
-      if (result.busy) return res.status(200).json({ ok: true, busy: false, deferred: true, dailyPlan: { deferred: true } });
-      return res.status(200).json({ ok: true, ...result });
+      if (result.busy) return respond(200, { ok: true, busy: false, deferred: true, dailyPlan: { deferred: true } });
+      return respond(200, { ok: true, ...result });
     }
     if (req.query?.action === 'briefing') {
       if (!['GET', 'POST'].includes(req.method ?? '')) return res.status(405).json({ error: 'method not allowed' });
