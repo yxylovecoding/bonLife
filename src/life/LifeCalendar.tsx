@@ -209,26 +209,26 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
       setSelection((previous) => ({ ...previous, year: Number(date.slice(0, 4)), month: Number(date.slice(5, 7)) }));
       openEntry({ date, kind, ...symptomEntries[`${kind}:${date}`], mutationId: crypto.randomUUID() });
     }} />}
-    {kind === 'training' && <div className="life-training-heading"><div><h2>{month} 月训练计划</h2>
-      <p role="status">{loading || trainingSource.busy ? '安排中…' : rolling ? `近 7 天 · 已练 ${rolling.coverage.filter((item) => item.completed).length} / ${rolling.coverage.length} 项` : !hasCycle ? '待设置经期' : futurePlanCount ? `后续 ${futurePlanCount} 天已安排 · 按体感调整` : '历史训练'}</p></div>
+    {kind === 'training' && <div className="life-training-heading"><div><h2>{month} 月运动计划</h2>
+      <p role="status">{loading || trainingSource.busy ? '安排中…' : rolling ? `近 7 天 · 已完成 ${rolling.coverage.filter((item) => item.completed).length} / ${rolling.coverage.length} 项` : !hasCycle ? '待设置经期' : futurePlanCount ? `后续 ${futurePlanCount} 天已安排 · 按体感调整` : '历史运动'}</p></div>
       <div className="life-training-actions"><button onClick={() => { setSelection((previous) => ({ ...previous, kind: 'body' })); setSaved(false); }}>身体数据 <span aria-hidden="true">›</span></button></div>
     </div>}
     {kind === 'body' && <div className="life-training-heading"><h2>身体数据</h2>
-      <button onClick={() => { setSelection((previous) => ({ ...previous, kind: 'training' })); setSaved(false); }}><span aria-hidden="true">‹ </span>返回训练</button>
+      <button onClick={() => { setSelection((previous) => ({ ...previous, kind: 'training' })); setSaved(false); }}><span aria-hidden="true">‹ </span>返回运动</button>
     </div>}
-    {kind === 'training' && <section className="life-training-source" aria-label="TickTick 训练计划" aria-busy={trainingSource.busy}>
-      <div className="life-done-toolbar"><span role="status">{trainingSource.busy ? '读取训练计划…' : trainingSource.current?.syncedAt ? 'TickTick · 已同步' : 'TickTick · 尚未同步'}</span>
+    {kind === 'training' && <section className="life-training-source" aria-label="TickTick 运动计划" aria-busy={trainingSource.busy}>
+      <div className="life-done-toolbar"><span role="status">{trainingSource.busy ? '读取运动计划…' : trainingSource.current?.syncedAt ? 'TickTick · 已同步' : 'TickTick · 尚未同步'}</span>
         <div className="life-training-actions"><button disabled={trainingSource.busy || !trainingSource.current} onClick={() => setTrainingSettingsOpen(true)}>管理项目</button>
-          <button disabled={trainingSource.busy} onClick={() => void trainingSource.refresh(true)}>同步训练</button></div></div>
-      {rolling && <details className="life-training-details"><summary>训练项目</summary><p className="life-training-schedule">{rolling.coverage.map(({ task, completed, lastCompleted }) => <span key={task.id}>{task.name}{task.tags?.length ? <small className="life-training-tags">{task.tags.join(' · ')}</small> : null} · {completed ? '已练' : '待练'}{lastCompleted ? ` · 上次 ${lastCompleted.slice(5).replace('-', '.')}` : ''}</span>)}</p></details>}
+          <button disabled={trainingSource.busy} onClick={() => void trainingSource.refresh(true)}>同步运动</button></div></div>
+      {rolling && <details className="life-training-details"><summary>运动项目</summary><p className="life-training-schedule">{rolling.coverage.map(({ task, completed, lastCompleted }) => <span key={task.id}>{task.name}{task.tags?.length ? <small className="life-training-tags">{task.tags.join(' · ')}</small> : null} · {completed ? '已完成' : '待完成'}{lastCompleted ? ` · 上次 ${lastCompleted.slice(5).replace('-', '.')}` : ''}</span>)}</p></details>}
       {trainingSource.error && <p className="life-error" role="alert">{trainingSource.error}</p>}
-      {!trainingSource.busy && trainingSource.current && !hasTrainingSource && <p className="life-empty-state">{trainingSource.current.connected ? '未找到训练待办' : <>TickTick 未连接 · <a href="https://bill.bonbills.cn/calendar" target="_blank" rel="noreferrer">连接 TickTick ↗</a></>}</p>}
+      {!trainingSource.busy && trainingSource.current && !hasTrainingSource && <p className="life-empty-state">{trainingSource.current.connected ? '未找到运动待办' : <>TickTick 未连接 · <a href="https://bill.bonbills.cn/calendar" target="_blank" rel="noreferrer">连接 TickTick ↗</a></>}</p>}
     </section>}
     {kind === 'training' && <details className="life-phase-guide"><summary>
       <span className="life-guide-heading">运动与饮食 <span>今天 {now.slice(5).replace('-', '.')}{!todayLoading && todayOverview.phase ? ` · ${todayOverview.phase.estimated ? '预计·' : ''}${todayAdvice!.label}` : ''}</span></span>
       <span className="life-guide-toggle">四阶段 <span className="life-guide-chevron" aria-hidden="true">⌄</span></span>
       <span className="life-today-guidance">
-        <span><span className="life-today-label">今日训练{!todayLoading && todayOverview.training?.completed ? ' · 已完成' : ''}</span>
+        <span><span className="life-today-label">今日运动{!todayLoading && todayOverview.training?.completed ? ' · 已完成' : ''}</span>
           <span>{todayLoading ? '安排中…' : error ? '暂不可用' : todayOverview.training?.plan || '暂无安排'}</span></span>
         <span><span className="life-today-label">运动建议</span><span>{todayLoading ? '读取中…' : error ? '暂不可用' : todayAdvice?.exercise || '待设置经期'}</span></span>
         <span><span className="life-today-label">饮食建议</span><span>{todayLoading ? '读取中…' : error ? '暂不可用' : todayAdvice?.food || '待设置经期'}</span></span>

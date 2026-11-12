@@ -32,7 +32,7 @@ export default function LifeCycleSettings({ initial, periodDays, year, tickTickT
   return <dialog ref={dialog} className="life-dialog" aria-labelledby="life-cycle-title" onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}>
     <form className="persistent-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <div className="persistent-form-body">
-      <div className="life-editor-heading"><h2 id="life-cycle-title">经期与训练</h2></div>
+      <div className="life-editor-heading"><h2 id="life-cycle-title">经期与运动</h2></div>
       <label className="life-field">最近月经开始<input type="date" min="1900-01-01" max={today} value={startEdited ? draft.lastPeriodStart : estimate.lastPeriodStart} disabled={busy}
         onChange={(event) => { setStartEdited(true); change({ lastPeriodStart: event.target.value }); }} /></label>
       <label className="life-cycle-auto"><input type="checkbox" checked={automatic} disabled={busy}
@@ -44,7 +44,7 @@ export default function LifeCycleSettings({ initial, periodDays, year, tickTickT
           onChange={(event) => change({ periodLength: Number(event.target.value) })} /></label></div>
       <p className="life-empty-state" role="status">{automatic ? estimate.cycleSamples ? '预测已更新' : '待积累周期记录' : '手动设置'}
         {estimate.nextPeriodStart && <> · 下次预计 {estimate.nextPeriodStart}{estimate.nextPeriodStart < today ? ' · 待确认' : ''}</>}</p>
-      {tickTickTraining ? <p className="life-empty-state">训练安排 · 自动轮换</p> : <fieldset className="life-training-days"><legend>训练日</legend><div>{[1, 2, 3, 4, 5, 6, 0].map((day, index) =>
+      {tickTickTraining ? <p className="life-empty-state">运动安排 · 自动轮换</p> : <fieldset className="life-training-days"><legend>运动日</legend><div>{[1, 2, 3, 4, 5, 6, 0].map((day, index) =>
         <button key={day} type="button" disabled={busy} aria-pressed={draft.trainingDays.includes(day)} aria-label={`周${'一二三四五六日'[index]}`}
           onClick={() => change({ trainingDays: draft.trainingDays.includes(day) ? draft.trainingDays.filter((value) => value !== day) : [...draft.trainingDays, day] })}>{'一二三四五六日'[index]}</button>)}</div></fieldset>}
       {error && <p className="life-error" role="alert">{error}</p>}

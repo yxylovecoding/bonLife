@@ -51,16 +51,16 @@ export const isSwimmingTraining = (task: Pick<TrainingTask, 'title' | 'name'>) =
 export function parseTrainingSettings(value: unknown): TrainingSettings {
   const input = value as TrainingSettings | null;
   if (!input || typeof input.revision !== 'string' || input.revision.length > 80
-    || !Array.isArray(input.projects) || input.projects.length > 60) throw new Error('训练项目设置无效');
+    || !Array.isArray(input.projects) || input.projects.length > 60) throw new Error('运动项目设置无效');
   const keys = new Set<string>(); const names = new Set<string>();
   const projects = input.projects.map((project) => {
     if (!project || typeof project.key !== 'string' || !project.key || project.key.length > 120
       || typeof project.name !== 'string' || !project.name.trim() || project.name.length > 60 || !trainingProjectKey(project.name)
-      || typeof project.notes !== 'string' || project.notes.length > 500 || typeof project.rotation !== 'boolean') throw new Error('训练项目信息无效');
+      || typeof project.notes !== 'string' || project.notes.length > 500 || typeof project.rotation !== 'boolean') throw new Error('运动项目信息无效');
     if (project.tags !== undefined && (!Array.isArray(project.tags) || project.tags.length > TRAINING_TAGS.length
-      || project.tags.some((tag) => !TRAINING_TAGS.includes(tag)))) throw new Error('训练项目标签无效');
+      || project.tags.some((tag) => !TRAINING_TAGS.includes(tag)))) throw new Error('运动项目标签无效');
     const name = trainingProjectKey(project.name);
-    if (keys.has(project.key) || names.has(name)) throw new Error('训练项目不能重复');
+    if (keys.has(project.key) || names.has(name)) throw new Error('运动项目不能重复');
     keys.add(project.key); names.add(name);
     return { key: project.key, name: project.name.trim(), notes: project.notes.trim(), rotation: project.rotation,
       ...(project.tags !== undefined ? { tags: TRAINING_TAGS.filter((tag) => project.tags!.includes(tag)) } : {}) };
@@ -85,7 +85,7 @@ export function trainingLibrary(tasks: TrainingTask[], settings = DEFAULT_TRAINI
 
 export function reuseTrainingProjects(tasks: TrainingTask[]): TrainingRecord {
   const plan = tasks.map((task) => `${task.name}${task.notes ? ` · ${task.notes.replace(/\n/g, '；')}` : ''}`).join('\n');
-  if (plan.length > 1000) throw new Error('训练内容过长，请减少项目或简化项目内容');
+  if (plan.length > 1000) throw new Error('运动内容过长，请减少项目或简化项目内容');
   return { plan, projects: tasks.map(trainingIdentity), effort: 'normal', completed: false, mode: 'manual' };
 }
 

@@ -29,7 +29,7 @@ function taskDate(task: TickTickTask): string | null {
   if (!value) return null;
   if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) return isCalendarDate(value.slice(0, 10)) ? value.slice(0, 10) : null;
   const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) throw new Error('训练日期无效');
+  if (!Number.isFinite(date.getTime())) throw new Error('运动日期无效');
   return new Intl.DateTimeFormat('sv-SE', { timeZone: task.timeZone || 'Asia/Shanghai' }).format(date);
 }
 
@@ -46,7 +46,7 @@ export function trainingTask(task: TickTickTask, year: number, adjustDate: (date
   }
   const dates = new Set<string>();
   let schedule = date || '未设日期';
-  if (routineRecurrence(task.repeatFlag) === 'unknown') throw new Error('训练重复规则暂不支持');
+  if (routineRecurrence(task.repeatFlag) === 'unknown') throw new Error('运动重复规则暂不支持');
   if (task.repeatFlag && date) {
     const rule = ICAL.Recur.fromString(task.repeatFlag.toUpperCase().replace(/^RRULE:/, ''));
     const byDay = rule.getComponent('BYDAY');
@@ -58,7 +58,7 @@ export function trainingTask(task: TickTickTask, year: number, adjustDate: (date
     const deadline = Date.now() + 1000;
     let iterations = 0;
     for (let next = iterator.next(); next; next = iterator.next()) {
-      if (++iterations > 150_000 || Date.now() > deadline) throw new Error('训练重复日期过多');
+      if (++iterations > 150_000 || Date.now() > deadline) throw new Error('运动重复日期过多');
       const occurrence = next.toString().slice(0, 10);
       if (occurrence >= `${year + 1}-01-01`) break;
       const adjusted = adjustDate(occurrence);
@@ -110,7 +110,7 @@ export function trainingCompletions(tasks: TickTickTask[], today: string): Train
   for (const task of tasks) {
     if (typeof task.title !== 'string' || !isTrainingTitle(task.title) || (task.status ?? 2) !== 2) continue;
     if (!task.completedTime || !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(task.completedTime)
-      || !Number.isFinite(Date.parse(task.completedTime))) throw new Error('训练完成日期无效');
+      || !Number.isFinite(Date.parse(task.completedTime))) throw new Error('运动完成日期无效');
     const date = shanghaiDay(new Date(task.completedTime));
     if (date > today) continue;
     const project = trainingProjectKey(trainingName(task.title));
@@ -159,5 +159,5 @@ export async function syncTrainingSource(year: number, options: { lockHeld?: boo
     `, [TICKTICK_CONNECTION_KEY, TRAINING_SOURCE_KEY], [connection.encryptedToken.data, JSON.stringify(snapshot), String(requestedAt)]);
     if (stored !== 1) throw new Error('连接或计划已更新');
     return readTrainingSource(year);
-  } catch { throw new Error('TickTick 训练计划同步失败，已保留原计划，请重试'); }
+  } catch { throw new Error('TickTick 运动计划同步失败，已保留原计划，请重试'); }
 }

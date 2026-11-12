@@ -86,7 +86,7 @@ describe('TickTick 训练来源', () => {
     expect(trainingCompletions([done('2026-10-06T17:00:00Z'), done('2026-10-07T01:00:00Z'),
       done('2026-10-08T01:00:00Z'), done('2026-10-06T01:00:00Z', { title: '运动💪🏻是生活的第一个锚点🪝' }),
       task({ title: '普通待办', completedTime: 'bad' })], '2026-10-07')).toEqual([{ project: '上半身', date: '2026-10-07' }]);
-    expect(() => trainingCompletions([done('bad')], '2026-10-07')).toThrow('训练完成日期无效');
+    expect(() => trainingCompletions([done('bad')], '2026-10-07')).toThrow('运动完成日期无效');
   });
   it('复用同账户历史并增量同步，长期停练仍保留最近完成顺序', async () => {
     vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-14T02:00:00Z'));

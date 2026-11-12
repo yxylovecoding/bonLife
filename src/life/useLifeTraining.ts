@@ -23,7 +23,7 @@ export function useLifeTraining(year: number, active: boolean, onExpired: () => 
     } catch (cause) {
       if (request.signal.aborted) return;
       if (cause instanceof LifeError && cause.status === 401) onExpired();
-      else setError(cause instanceof Error ? cause.message : '训练计划读取失败，请重试');
+      else setError(cause instanceof Error ? cause.message : '运动计划读取失败，请重试');
     } finally { if (!request.signal.aborted) setBusy(false); }
   }, [year, onExpired]);
   useEffect(() => {

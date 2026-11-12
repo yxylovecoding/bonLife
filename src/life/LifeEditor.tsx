@@ -114,14 +114,14 @@ export default function LifeEditor({ initial, owner, cycle, periodDays, training
             change({ body });
           }} /></label>)}</div>}
       {draft.kind === 'training' && <div className="life-training-editor">
-        <fieldset className="life-skin-choices" disabled={busy}><legend>训练项目</legend><div>{trainingLibrary.map((task) => <button type="button" key={trainingIdentity(task)}
+        <fieldset className="life-skin-choices" disabled={busy}><legend>运动项目</legend><div>{trainingLibrary.map((task) => <button type="button" key={trainingIdentity(task)}
           aria-pressed={chosenProjects.includes(trainingIdentity(task))} onClick={() => {
             const key = trainingIdentity(task);
             const keys = chosenProjects.includes(key) ? chosenProjects.filter((value) => value !== key) : [...chosenProjects, key];
             try { change({ training: reuseTrainingProjects(trainingLibrary.filter((value) => keys.includes(trainingIdentity(value)))) }); setError(''); }
-            catch (cause) { setError(cause instanceof Error ? cause.message : '训练项目选择失败'); }
+            catch (cause) { setError(cause instanceof Error ? cause.message : '运动项目选择失败'); }
           }}>{task.name}{task.tags?.length ? <small className="life-training-tags">{task.tags.join(' · ')}</small> : null}</button>)}</div></fieldset>
-        {Boolean(chosenTasks.length) && <details className="life-training-details"><summary>训练内容</summary>
+        {Boolean(chosenTasks.length) && <details className="life-training-details"><summary>运动内容</summary>
           {chosenTasks.map((task) => <div key={task.id}><p>{task.name}</p>{task.notes && <p className="life-training-notes">{task.notes}</p>}
             {task.links.length > 0 && <div className="life-training-links">{task.links.map((link) => <a href={link.url} key={link.url} target="_blank" rel="noreferrer">{link.title} ↗</a>)}</div>}</div>)}
         </details>}
@@ -134,7 +134,7 @@ export default function LifeEditor({ initial, owner, cycle, periodDays, training
           change({ training: { ...automaticTraining(draft.date, training?.mode === 'manual' ? chosenTasks : trainingTasks, cycle, periodDays, effort),
             mode: training?.mode ?? 'auto', completed: training?.completed ?? false } });
         }}><option value="normal">按计划</option><option value="easy">轻量</option><option value="rest">休息</option></select></label>
-        <label className="life-field">训练计划<textarea aria-label="训练计划" rows={3} maxLength={1000} disabled={busy} value={training?.plan ?? ''}
+        <label className="life-field">运动计划<textarea aria-label="运动计划" rows={3} maxLength={1000} disabled={busy} value={training?.plan ?? ''}
           onChange={(event) => change({ training: { effort: 'normal', completed: false, ...training, plan: event.target.value, mode: 'manual', projects: undefined } })} /></label>
         <label className="life-check"><input type="checkbox" disabled={busy} checked={training?.completed ?? false} onChange={(event) =>
           change({ training: { plan: '', effort: 'normal', ...training, completed: event.target.checked } })} />已完成</label>

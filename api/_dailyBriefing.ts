@@ -42,7 +42,7 @@ export function buildTrainingBriefing(today: string, source: TrainingSource, cyc
         ? `${task.name}已完成，不计入主训练轮换与恢复`
         : `${task.name}独立安排，跟随洗头日并避开经期，不受主训练休息影响`);
     }
-    else if (record.completed) reasons.push('已完成，保留实际训练记录');
+    else if (record.completed) reasons.push('已完成，保留实际运动记录');
     else if (record.mode !== 'auto') reasons.push('保留你手动安排的内容');
     else if (record.effort === 'rest') reasons.push('你已选择休息');
     else if (record.effort === 'easy' || (phase?.phase === 'menstrual' && phase.day <= 3)) reasons.push('按当前强度与经期设置安排恢复活动');
@@ -50,7 +50,7 @@ export function buildTrainingBriefing(today: string, source: TrainingSource, cyc
       for (const task of selected) {
         const key = trainingIdentity(task);
         if (completed?.has(key)) reasons.push(`${task.name}已完成，其他项目继续保留`);
-        else if (isSwimmingTraining(task)) reasons.push(`${task.name}跟随洗头日并避开经期，可与当天训练并存`);
+        else if (isSwimmingTraining(task)) reasons.push(`${task.name}跟随洗头日并避开经期，可与当天运动并存`);
         else if (projected.has(key)) reasons.push(`${task.name}继续轮换；本次预排已在 ${projected.get(key)} 安排，后续仍按实际完成调整`);
         else reasons.push(last.get(key) ? `${task.name}上次实际完成于 ${last.get(key)}，本轮按最久未练优先`
           : `${task.name}尚无匹配的完成记录，优先补齐轮换项目`);
@@ -101,7 +101,7 @@ export async function readDailyBriefing(now = new Date()): Promise<DailyBriefing
   if (latest?.encryptedToken.data !== connection.encryptedToken.data) throw new Error('连接已更新，请刷新简报');
   const warnings: string[] = [];
   if (plan?.briefing?.date !== today) warnings.push('今日事尚未完成今天的排期，请先刷新简报');
-  if (!source.syncedAt || shanghaiDay(new Date(source.syncedAt)) !== today) warnings.push('训练完成记录尚未更新到今天，请先刷新简报');
+  if (!source.syncedAt || shanghaiDay(new Date(source.syncedAt)) !== today) warnings.push('运动完成记录尚未更新到今天，请先刷新简报');
   return { date: today, generatedAt: now.toISOString(), planGeneratedAt: plan?.briefing?.generatedAt, ready: !warnings.length, warnings,
     summary: plan?.summary?.date === today ? plan.summary : undefined,
     today: buildTodayBriefing(tasks, plan, today), training: buildTrainingBriefing(today, source, cycle, periods) };
@@ -114,12 +114,12 @@ export function renderDailyBriefing(report: DailyBriefing, email = false) {
   const time = (minutes: number) => minutes ? `约 ${minutes} 分钟` : '休息';
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${report.date} 每日简报</title>
 <style>body{max-width:1000px;margin:40px auto;padding:0 20px;font:14px/1.7 system-ui;color:#333;background:#fafaf7}h1{font-size:24px}h2{font-size:18px;margin-top:32px}table{width:100%;border-collapse:collapse}td,th{padding:12px 10px;text-align:left;border-bottom:1px solid #dedfd8;vertical-align:top}small,p{color:#666}button{background:#596953;color:white;border:0;padding:10px 20px;cursor:pointer}td{white-space:pre-line;overflow-wrap:anywhere}.warning{color:#984921}@media(max-width:600px){th,td{padding:8px 5px;font-size:12px}}</style></head>
-<body><main data-briefing-ready="${report.ready}" data-date="${report.date}"><h1>${report.date} · 训练与今日事</h1><p>读取时间：${when(report.generatedAt)} · 北京时间${report.planGeneratedAt ? `<br>今日事排期时间：${when(report.planGeneratedAt)}` : ''}</p>
+<body><main data-briefing-ready="${report.ready}" data-date="${report.date}"><h1>${report.date} · 运动与今日事</h1><p>读取时间：${when(report.generatedAt)} · 北京时间${report.planGeneratedAt ? `<br>今日事排期时间：${when(report.planGeneratedAt)}` : ''}</p>
 ${email ? '<p><a href="https://www.bonbills.cn/life?view=briefing">查看最新计划</a></p>' : '<form method="post" action="/api/ticktick-trips?action=briefing"><button type="submit">刷新简报</button></form>'}
 ${report.warnings.map((warning) => `<p class="warning">${escapeHtml(warning)}</p>`).join('')}
-<h2>未来 7 天训练 · ${report.date}—${report.training.at(-1)?.date}</h2><table><thead><tr><th>日期 / 阶段</th><th>训练</th><th>预计用时</th><th>安排原因</th></tr></thead><tbody>${report.training.map((day) => `<tr><td>${day.date}<br><small>${escapeHtml(day.phase)}</small></td><td>${escapeHtml(day.plan)}</td><td>${time(day.minutes)}</td><td>${reasons(day.reasons)}</td></tr>`).join('')}</tbody></table>
+<h2>未来 7 天运动 · ${report.date}—${report.training.at(-1)?.date}</h2><table><thead><tr><th>日期 / 阶段</th><th>运动</th><th>预计用时</th><th>安排原因</th></tr></thead><tbody>${report.training.map((day) => `<tr><td>${day.date}<br><small>${escapeHtml(day.phase)}</small></td><td>${escapeHtml(day.plan)}</td><td>${time(day.minutes)}</td><td>${reasons(day.reasons)}</td></tr>`).join('')}</tbody></table>
 <h2>今日事 · ${report.today.length} 项 · 约 ${report.today.reduce((sum, item) => sum + item.minutes, 0)} 分钟</h2>
 ${report.summary ? `<p>排期时可用时间约 ${report.summary.availableMinutes} 分钟，另有 ${report.summary.importantCount} 项重要事项。</p>` : ''}
 ${report.today.length ? `<table><thead><tr><th>事项</th><th>预计用时</th><th>入选原因</th></tr></thead><tbody>${report.today.map((item) => `<tr><td>${escapeHtml(item.title)}</td><td>${time(item.minutes)}</td><td>${reasons(item.reasons)}</td></tr>`).join('')}</tbody></table>` : '<p>今日事暂无待办。</p>'}
-<p>时长均为预估；训练若已在今日事中列出，不重复相加。后续训练会随实际完成和经期记录更新。</p></main></body></html>`;
+<p>时长均为预估；运动若已在今日事中列出，不重复相加。后续运动会随实际完成和经期记录更新。</p></main></body></html>`;
 }
