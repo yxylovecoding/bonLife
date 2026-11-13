@@ -30,7 +30,7 @@ Worker 固定调用 Render 服务地址，不接受请求方提供目标 URL、�
 ## 检查与恢复
 
 - BonLog 账号所有者可通过已登录的 `GET /api/ticktick-trips?action=scheduler-status` 读取同一队列的脱敏状态；只返回触发时间、阶段、状态、HTTP 状态和固定失败类别，不触发任务，也不返回密钥或业务记录。
-- 所有者可按需读取 `GET /api/outlook-calendar?action=diagnostics&source=0`（source 为订阅索引），对比系统 DNS 与两家公共 DNS 的 IPv4、逐地址 TCP/TLS 连接及最多两次原订阅读取。仅返回阶段、耗时、状态和字节数，不返回私密订阅地址、响应正文或日程，不保存快照、不投递任务。连接只针对验证后的 Outlook 主机，保留证书校验、不跟随重定向，拒绝私网地址。
+- 所有者可按需读取 `GET /api/outlook-calendar?action=diagnostics&source=0`（source 为订阅索引），对比系统 DNS 与两家公共 DNS 的 IPv4、逐地址 TCP/TLS 连接、原订阅读取、TLS 参数及系统 curl；个人日历另对比微软 `outlook.com` 入口。仅返回阶段、耗时、状态和字节数，不返回私密订阅地址、响应正文或日程，不保存快照、不投递任务。连接只针对固定 Outlook 主机，保留证书校验、不跟随重定向，拒绝私网探测地址；每次读取最多 12–15 秒及 4MB，curl 的订阅地址只经 stdin 传入，不进入命令行参数。
 - 点击 Orche 后自动展开排期详情，按本次返回的任务 ID 显示排队、执行、完成或失败；提交成功只代表入队。详情关闭或页面隐藏时暂停状态读取。没有当天快照但已有当日失败记录时，显示失败原因；不将失败显示为空白排期，也不因读取状态触发重跑。
 - Worker 的 `[scheduler-origin]` 日志区分就绪探测和业务调用，只保存 HTTP 状态、耗时、响应类型、Render 来源标记和固定失败阶段。`application-json` 且 `rulesComplete=false` 表示应用内规则未完成；非应用响应不能直接当作同一原因。历史无此记录时，不凭 502 状态码断言冷启动。运行日志不保存响应正文、任意响应头、请求地址、凭据或任务内容。
 - `GET /status`：附 `Authorization: Bearer <DISPATCH_SECRET>`，返回最近 3 天、最多 200 条队列状态和 `lastCronAt`。仅输出固定阶段、时间、HTTP 状态和失败类别。

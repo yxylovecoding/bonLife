@@ -2,6 +2,7 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import tls from 'node:tls';
 import https from 'node:https';
+import { execFile } from 'node:child_process';
 import { validateOutlookUrl } from './_outlookCalendar.js';
 
 // Owner-only, read-only diagnostics. Neither provider URLs/bodies nor arbitrary
@@ -34,11 +35,11 @@ async function publicDns(host: string, provider: 'google' | 'cloudflare') {
     return { provider, ms: Date.now() - started, addresses };
   } catch { return { provider, ms: Date.now() - started, error: 'dns-unavailable', addresses: [] as string[] }; }
 }
-function probeTls(host: string, address: string) {
+function probeTls(host: string, address: string, options: tls.ConnectionOptions = {}) {
   return new Promise<{ address: string; ms: number; phase: string; error?: string }>(resolve => {
     const started = Date.now();
     let phase = 'tcp', finished = false;
-    const socket = tls.connect({ host: address, port: 443, servername: host, rejectUnauthorized: true });
+    const socket = tls.connect({ host: address, port: 443, servername: host, rejectUnauthorized: true, ...options });
     const finish = (error?: string) => {
       if (finished) return;
       finished = true; clearTimeout(timer); socket.destroy();
@@ -50,12 +51,12 @@ function probeTls(host: string, address: string) {
     socket.once('error', error => finish(code(error)));
   });
 }
-function probeCalendar(url: string, address: string) {
+function probeCalendar(url: string, address?: string, options: tls.ConnectionOptions = {}) {
   return new Promise<Record<string, unknown>>(resolve => {
     const started = Date.now();
     let finished = false;
     const request = https.get(url, {
-      agent: false, family: 4, lookup: (_host, _options, callback) => callback(null, address, 4),
+      agent: false, family: 4, ...(address ? { lookup: (_host: string, _options: unknown, callback: (error: null, address: string, family: number) => void) => callback(null, address, 4) } : {}), ...options,
       signal: AbortSignal.timeout(12_000), headers: { Accept: 'text/calendar' },
     }, response => {
       const http = response.statusCode;
@@ -77,9 +78,26 @@ function probeCalendar(url: string, address: string) {
     request.once('error', error => finish({ error: code(error) }));
   });
 }
+export function probeCurl(url: string): Promise<Record<string, unknown>> {
+  return new Promise(resolve => {
+    // Feed URL on stdin, never argv, a shell, logs, redirects or output metadata.
+    const child = execFile('curl', ['--disable', '--config', '-', '--silent', '--ipv4', '--proto', '=https',
+      '--max-time', '15', '--max-filesize', '4000000', '--output', '/dev/null',
+      '--write-out', '%{http_code} %{remote_ip} %{time_connect} %{time_appconnect} %{size_download}'],
+    { timeout: 17_000, maxBuffer: 4096 }, (error, stdout) => {
+      const parts = stdout.trim().split(/\s+/);
+      resolve({ client: 'curl', http: /^\d{3}$/.test(parts[0]) ? Number(parts[0]) : 0,
+        address: publicIpv4(parts[1] ?? '') ? parts[1] : undefined,
+        connectSeconds: Number(parts[2]) || 0, tlsSeconds: Number(parts[3]) || 0,
+        bytes: Number(parts[4]) || 0, ...(error ? { error: 'request-failed' } : {}) });
+    });
+    child.stdin?.end(`url = ${JSON.stringify(url)}\n`);
+  });
+}
 export async function diagnoseOutlookSource(value: string) {
   const url = validateOutlookUrl(value), host = new URL(url).hostname;
   const started = Date.now();
+  const curlPromise = probeCurl(url);
   const [system, google, cloudflare] = await Promise.all([
     Promise.race([lookup(host, { all: true }).then(addresses => ({ addresses })),
       new Promise<{ addresses: { address: string; family: number }[] }>(resolve => {
@@ -90,6 +108,15 @@ export async function diagnoseOutlookSource(value: string) {
     .filter(publicIpv4).slice(0, 24);
   const connections = await Promise.all(addresses.map(address => probeTls(host, address)));
   const ready = connections.filter(item => item.phase === 'ready' && !item.error).slice(0, 2);
-  const reads = await Promise.all(ready.map(item => probeCalendar(url, item.address)));
-  return { host, ms: Date.now() - started, dns: { system: system.addresses, google, cloudflare }, connections, reads };
+  const selected = connections.find(item => item.phase === 'tls')?.address ?? addresses[0];
+  const alternate = new URL(url); alternate.hostname = 'outlook.com';
+  const [reads, tls12, x25519, alpn, alternateRead, curl] = await Promise.all([
+    Promise.all(ready.map(item => probeCalendar(url, item.address))),
+    selected ? probeCalendar(url, selected, { maxVersion: 'TLSv1.2' }) : null,
+    selected ? probeCalendar(url, selected, { ecdhCurve: 'X25519' }) : null,
+    selected ? probeCalendar(url, selected, { ALPNProtocols: ['http/1.1'] }) : null,
+    host === 'outlook.live.com' ? probeCalendar(alternate.href) : null, curlPromise,
+  ]);
+  return { host, runtime: process.version, ms: Date.now() - started, dns: { system: system.addresses, google, cloudflare },
+    connections, reads, clients: { tls12, x25519, alpn, outlookCom: alternateRead, curl } };
 }
