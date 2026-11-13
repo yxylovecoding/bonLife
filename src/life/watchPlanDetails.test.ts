@@ -35,6 +35,24 @@ it('打开读取，云端异步完成后通过轮询读取新快照，显式刷�
   expect(fetch.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
 });
 
+it('跟踪本次 Orche 的云端状态，没有快照的失败也返回给页面', async () => {
+  let id: string | undefined = 'manual-one';
+  const progress = { state: 'running', message: 'Orchestrate 排期中…' };
+  fetch.mockResolvedValueOnce(new Response(JSON.stringify({ details: null, progress })));
+  const events = { ...callbacks(), getJobId: () => id, onProgress: vi.fn() };
+  watcher = watchPlanDetails(events); await vi.advanceTimersByTimeAsync(0);
+  expect(fetch.mock.calls[0][0]).toContain('jobId=manual-one');
+  expect(events.onProgress).toHaveBeenLastCalledWith(progress, 'manual-one');
+  const failed = { state: 'failed', message: 'Orchestrate 未完成：Outlook 日历读取失败' };
+  fetch.mockResolvedValueOnce(new Response(JSON.stringify({ details: null, progress: failed })));
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(events.onProgress).toHaveBeenLastCalledWith(failed, 'manual-one');
+  expect(events.onDetails).toHaveBeenLastCalledWith(null);
+  id = undefined;
+  watcher.refresh(); await vi.advanceTimersByTimeAsync(0);
+  expect(fetch.mock.calls.at(-1)![0]).not.toContain('jobId');
+});
+
 it('页面隐藏时暂停读取，返回页面和聚焦均刷新，关闭后移除监听和定时器', async () => {
   watcher = watchPlanDetails(callbacks()); await vi.advanceTimersByTimeAsync(0);
   page.visibilityState = 'hidden';

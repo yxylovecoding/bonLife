@@ -228,9 +228,12 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     if (req.query?.action === 'plan-details') {
       if (req.method !== 'GET') return res.status(405).json({ error: 'method not allowed' });
       const { readTickTickPlanDetails } = await import('./_ticktickPlanDetails.js');
+      const { readOrchestrateProgress } = await import('./_orchestrateProgress.js');
+      const jobId = typeof req.query.jobId === 'string' && /^[a-zA-Z0-9-]{1,100}$/.test(req.query.jobId) ? req.query.jobId : undefined;
       // Snapshot reads must observe cloud updates and the Shanghai day boundary.
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json({ details: await readTickTickPlanDetails() });
+      const [details, progress] = await Promise.all([readTickTickPlanDetails(), readOrchestrateProgress(jobId)]);
+      return res.status(200).json({ details, progress });
     }
     if (req.query?.action === 'trigger-replan') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'method not allowed' });

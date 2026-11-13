@@ -109,7 +109,16 @@ export function calendarReadFailure(error: unknown) {
   if (error instanceof CalendarReadError) return { reason: error.reason, ...(error.http ? { http: error.http } : {}) };
   if (error instanceof Error) {
     if (['AbortError', 'TimeoutError'].includes(error.name)) return { reason: 'timeout' };
-    if (error instanceof TypeError) return { reason: 'network' };
+    if (error instanceof TypeError) {
+      const safeCodes = new Set(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'ETIMEDOUT',
+        'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT',
+        'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE']);
+      const cause = error.cause as { code?: string; message?: string; errors?: { code?: string }[] } | undefined;
+      if (cause?.message === 'unexpected redirect') return { reason: 'redirect' };
+      const codes = [cause?.code, ...cause?.errors?.map(item => item.code) ?? []]
+        .filter((code): code is string => Boolean(code && safeCodes.has(code)));
+      return { reason: 'network', ...(codes.length ? { codes: [...new Set(codes)] } : {}) };
+    }
     const reasons: Record<string, string> = {
       '日历内容过大': 'size-limit', '订阅内容不是完整日历': 'invalid-calendar',
       '日历日程过多': 'event-limit', '日历含暂不支持的后续日程变更': 'future-exception',

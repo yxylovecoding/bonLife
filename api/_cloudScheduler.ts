@@ -37,6 +37,7 @@ export async function readCloudSchedulerStatus() {
     'visibility-incomplete', 'email-cancelled', 'missing-run-secret', 'response-unknown', 'origin-not-ready']);
   const time = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
   return { schedulerHost: url.hostname, lastCronAt: time(result.lastCronAt), jobs: result.jobs.slice(-200).map((job: any) => ({
+    id: typeof job.id === 'string' && /^[a-zA-Z0-9-]{1,100}$/.test(job.id) ? job.id : undefined,
     kind: ['full', 'hourly', 'night', 'midnight', 'monthly-backup'].includes(job.kind) ? job.kind : 'other',
     status: statuses.has(job.status) ? job.status : 'unknown',
     scheduledAt: time(job.scheduledAt), startedAt: time(job.startedAt), finishedAt: time(job.finishedAt),

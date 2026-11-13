@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { accountFetch } from '../utils/authClient';
 import { currentTickTickPlan, type TickTickPlanDetails } from '../utils/tickTickPlanDetails';
 import { watchPlanDetails } from './watchPlanDetails';
+import type { OrchestrateProgress } from '../utils/orchestrateProgress';
 
 export function useOrchestrate(onExpired: () => void) {
   const [replanning, setReplanning] = useState(false);
@@ -11,6 +12,8 @@ export function useOrchestrate(onExpired: () => void) {
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState('');
   const [planDetails, setPlanDetails] = useState<TickTickPlanDetails | null>(null);
+  const [progress, setProgress] = useState<OrchestrateProgress | null>(null);
+  const jobId = useRef<string>();
   const replanController = useRef<AbortController | null>(null);
   const detailsWatcher = useRef<ReturnType<typeof watchPlanDetails> | null>(null);
   const mounted = useRef(true);
@@ -28,6 +31,12 @@ export function useOrchestrate(onExpired: () => void) {
       onError: setDetailsError,
       onSettled: () => setDetailsLoading(false),
       onExpired,
+      getJobId: () => jobId.current,
+      onProgress: (next, readJobId) => {
+        if (jobId.current !== readJobId) return;
+        setProgress(next);
+        if (next?.state === 'success' || next?.state === 'failed') jobId.current = undefined;
+      },
     });
     detailsWatcher.current = watcher;
     return () => { watcher.dispose(); detailsWatcher.current = null; };
@@ -43,10 +52,13 @@ export function useOrchestrate(onExpired: () => void) {
         method: 'POST', credentials: 'same-origin', signal: request.signal,
       });
       if (response.status === 401) { onExpired(); return; }
-      const result = await response.json() as { triggered?: boolean; error?: string };
+      const result = await response.json() as { triggered?: boolean; jobId?: string; error?: string };
       if (!response.ok || !result.triggered) throw new Error(result.error || 'Orchestrate 提交失败，请重试');
       if (mounted.current && !request.signal.aborted) {
         setReplanMessage('Orchestrate 已提交');
+        jobId.current = result.jobId;
+        setProgress({ state: 'queued', message: 'Orchestrate 排队中…' });
+        setDetailsOpen(true);
         detailsWatcher.current?.refresh();
       }
     } catch (cause) {
@@ -63,5 +75,5 @@ export function useOrchestrate(onExpired: () => void) {
   function toggleDetails() {
     setDetailsOpen(open => !open);
   }
-  return { replanning, replanMessage, replanError, triggerReplan, detailsOpen, detailsLoading, detailsError, planDetails, toggleDetails };
+  return { replanning, progress, replanMessage, replanError, triggerReplan, detailsOpen, detailsLoading, detailsError, planDetails, toggleDetails };
 }

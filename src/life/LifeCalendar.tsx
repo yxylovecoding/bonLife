@@ -184,9 +184,10 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
     <span className="sr-only" role="status">{orche.replanning ? '正在提交 Orchestrate…' : orche.replanMessage}</span>
     {orche.replanError && <p className="life-error" role="alert">{orche.replanError}</p>}
     {orche.detailsOpen && <section id="life-orche-details" aria-label="当前排期" aria-busy={orche.detailsLoading}>
+      {orche.progress && <p className={orche.progress.state === 'failed' ? 'life-error' : 'life-empty-state'} role={orche.progress.state === 'failed' ? 'alert' : 'status'}>{orche.progress.message}</p>}
       {orche.detailsLoading && !orche.planDetails ? <p className="life-empty-state" role="status">读取中…</p>
         : orche.detailsError ? <p className="life-error" role="alert">{orche.detailsError}</p>
-          : orche.planDetails ? <LifePlanDetails plan={orche.planDetails} /> : <p className="life-empty-state">今日暂无排期记录</p>}
+          : orche.planDetails ? <LifePlanDetails plan={orche.planDetails} /> : !orche.progress && <p className="life-empty-state">今日暂无排期记录</p>}
     </section>}
     <div className="life-toolbar">
       <nav className="life-tabs" aria-label="状态日历">{(['skin', 'eyes', 'discomfort', 'mood', 'training', 'done'] as const).map((value) => <button key={value}
