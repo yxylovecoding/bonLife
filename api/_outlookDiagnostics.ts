@@ -89,7 +89,10 @@ export function probeCurl(url: string): Promise<Record<string, unknown>> {
       resolve({ client: 'curl', http: /^\d{3}$/.test(parts[0]) ? Number(parts[0]) : 0,
         address: publicIpv4(parts[1] ?? '') ? parts[1] : undefined,
         connectSeconds: Number(parts[2]) || 0, tlsSeconds: Number(parts[3]) || 0,
-        bytes: Number(parts[4]) || 0, ...(error ? { error: 'request-failed' } : {}) });
+        bytes: Number(parts[4]) || 0, ...(error ? {
+          error: error.code === 'ENOENT' ? 'client-unavailable' : 'request-failed',
+          ...(typeof error.code === 'number' ? { exitCode: error.code } : {}),
+        } : {}) });
     });
     child.stdin?.end(`url = ${JSON.stringify(url)}\n`);
   });

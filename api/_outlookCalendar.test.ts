@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calendarReadFailure, decryptOutlookConnection, encryptOutlookConnection, fetchCalendar, parseOutlookCalendar, parseOutlookInput, readOutlookSnapshot, validateOutlookUrl } from './_outlookCalendar';
+import { calendarReadAdvice, calendarReadFailure, decryptOutlookConnection, encryptOutlookConnection, fetchCalendar, parseOutlookCalendar, parseOutlookInput, readOutlookSnapshot, validateOutlookUrl } from './_outlookCalendar';
 import { DEFAULT_OUTLOOK_RULES } from '../src/utils/outlookCalendar';
 import { planTickTickDay, type DailyPlanState } from './_ticktickDailyPlan';
 import https from 'node:https';
@@ -15,6 +15,20 @@ const input = { playUrl, classUrl, policy: 'manual' as const, rules: DEFAULT_OUT
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Outlook ICS 解析', () => {
+  it('native HTTPS 网络错误不误报解析失败或订阅失效，也不泄露 URL', () => {
+    const error = Object.assign(new Error(playUrl), { code: 'ECONNRESET' });
+    expect(calendarReadFailure(error)).toEqual({ reason: 'network', codes: ['ECONNRESET'] });
+    expect(calendarReadAdvice(error)).toBe('Outlook 暂时无法连接，请稍后重试');
+  });
+  it.each([
+    [503, 'Outlook 服务暂不可用，请稍后重试'],
+    [429, 'Outlook 请求过于频繁，请稍后重试'],
+    [404, '请检查订阅链接与共享范围'],
+  ])('日历 HTTP %i 返回对应建议且不回显上游正文', async (status, advice) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(`PRIVATE ${playUrl}`, { status: Number(status) })));
+    await expect(readOutlookSnapshot({ ...input, classUrl: '' }, '2026-10-01', '2026-11-01'))
+      .rejects.toThrow(`「玩」日历读取失败，${advice}`);
+  });
   it.each(['connect', 'aggregate'])('%s 连接超时后尝试受限的 IPv4 读取，仍不跟随重定向', async kind => {
     const valid = calendar('');
     const cause = kind === 'connect' ? { code: 'UND_ERR_CONNECT_TIMEOUT' }

@@ -42,6 +42,15 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe('经期 Outlook 解析', () => {
+  it('上游故障保留经期历史，提示临时故障并保留原错误分类', async () => {
+    const saved = { events: [{ uid: 'previous', startDate: '2026-09-01', endDate: '2026-09-05' }] };
+    data.set(periodsKey(2026), saved);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('PRIVATE upstream', { status: 503 })));
+    await expect(syncLifePeriods(connection(), 2026)).rejects.toThrow('Outlook 日历读取失败，Outlook 服务暂不可用，请稍后重试');
+    expect(data.get(periodsKey(2026))).toEqual(saved);
+    expect(data.get('bonlife:period-read-status:v1')).toEqual({ connectionId: 'connection-1',
+      error: 'Outlook 日历读取失败，Outlook 服务暂不可用，请稍后重试' });
+  });
   it('读取按日期共享的化妆状态，保留皮肤和眼睛各自的记录', async () => {
     const makeup = { face: true, eyes: false, revision: 'shared' };
     getHash.mockImplementation(async (key) => key === entriesKey(2026) ? {

@@ -37,6 +37,16 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe('Outlook 连接接口', () => {
+  it('上游故障保留连接和已保存日历，并提示暂不可用而非让用户重连', async () => {
+    await call('PUT', input);
+    const previous = new Map(data);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('PRIVATE upstream', { status: 503 })));
+    const result = await call('POST', range);
+    expect(result.status).toBe(502);
+    expect(result.body.error).toBe('「玩」日历读取失败，Outlook 服务暂不可用，请稍后重试');
+    expect(data).toEqual(previous);
+    expect(JSON.stringify(result.body)).not.toMatch(/PRIVATE|https:\/\//);
+  });
   it('诊断只允许所有者，拒绝时不读取连接或请求上游', async () => {
     authenticated.mockImplementation(async (_req, options) => !options?.ownerOnly);
     expect((await call('GET', undefined, { action: 'diagnostics' })).status).toBe(403);

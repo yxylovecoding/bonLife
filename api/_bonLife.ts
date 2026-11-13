@@ -1,6 +1,6 @@
 import ICAL from 'ical.js';
 import { kv } from './_accountKv.js';
-import { fetchCalendar, parseOutlookCalendar, decryptOutlookConnection, calendarReadFailure } from './_outlookCalendar.js';
+import { fetchCalendar, parseOutlookCalendar, decryptOutlookConnection, calendarReadFailure, calendarReadAdvice } from './_outlookCalendar.js';
 import { periodDays, reconcilePeriodEvents, type PeriodEvent } from '../src/utils/bonLife.js';
 import { isPeriodCalendarTitle } from '../src/utils/outlookCalendar.js';
 
@@ -46,14 +46,16 @@ async function readPeriodCalendarText(connection: LifeConnection) {
     return await fetchCalendar(input.playUrl);
   } catch (error) {
     console.warn('[outlook-period-read-failure]', JSON.stringify(calendarReadFailure(error)));
-    await kv.set('bonlife:period-read-status:v1', { connectionId: connection.id, error: '经期订阅同步失败，请检查连接' });
-    throw new Error('Outlook 日历读取失败，请检查订阅链接与共享范围');
+    const message = `Outlook 日历读取失败，${calendarReadAdvice(error)}`;
+    await kv.set('bonlife:period-read-status:v1', { connectionId: connection.id, error: message });
+    throw new Error(message);
   }
 }
 
 export async function readPeriodCalendar(connection: LifeConnection, year: number) {
-  try { return parsePeriodCalendar(await readPeriodCalendarText(connection), year); }
-  catch { throw new Error('Outlook 日历读取失败，请检查订阅链接与共享范围'); }
+  const text = await readPeriodCalendarText(connection);
+  try { return parsePeriodCalendar(text, year); }
+  catch (error) { throw new Error(`Outlook 日历读取失败，${calendarReadAdvice(error)}`); }
 }
 
 export async function syncLifePeriods(connection: LifeConnection, year: number) {

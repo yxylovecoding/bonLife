@@ -110,13 +110,13 @@ export function calendarReadFailure(error: unknown) {
   if (error instanceof CalendarReadError) return { reason: error.reason, ...(error.http ? { http: error.http } : {}) };
   if (error instanceof Error) {
     if (['AbortError', 'TimeoutError'].includes(error.name)) return { reason: 'timeout' };
-    if (error instanceof TypeError) {
+    if (error instanceof TypeError || typeof (error as NodeJS.ErrnoException).code === 'string') {
       const safeCodes = new Set(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'ETIMEDOUT',
         'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT',
         'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE']);
       const cause = error.cause as { code?: string; message?: string; errors?: { code?: string }[] } | undefined;
       if (cause?.message === 'unexpected redirect') return { reason: 'redirect' };
-      const codes = [cause?.code, ...(Array.isArray(cause?.errors) ? cause.errors.map(item => item?.code) : [])]
+      const codes = [(error as NodeJS.ErrnoException).code, cause?.code, ...(Array.isArray(cause?.errors) ? cause.errors.map(item => item?.code) : [])]
         .filter((code): code is string => Boolean(code && safeCodes.has(code)));
       return { reason: 'network', ...(codes.length ? { codes: [...new Set(codes)] } : {}) };
     }
@@ -129,6 +129,16 @@ export function calendarReadFailure(error: unknown) {
     if (reasons[error.message]) return { reason: reasons[error.message] };
   }
   return { reason: 'parse' };
+}
+
+export function calendarReadAdvice(error: unknown): string {
+  const failure = calendarReadFailure(error);
+  if (failure.reason === 'network' || failure.reason === 'timeout') return 'Outlook 暂时无法连接，请稍后重试';
+  if ('http' in failure && failure.http === 429) return 'Outlook 请求过于频繁，请稍后重试';
+  if ('http' in failure && failure.http && failure.http >= 500) return 'Outlook 服务暂不可用，请稍后重试';
+  if (failure.reason === 'redirect' || ('http' in failure && [401, 403, 404, 410].includes(failure.http ?? 0)))
+    return '请检查订阅链接与共享范围';
+  return '日历内容暂时无法处理，请稍后重试';
 }
 
 export async function fetchCalendar(url: string): Promise<string> {
@@ -335,7 +345,7 @@ export async function readOutlookSnapshot(input: OutlookConnectionInput, startDa
     } catch (error) {
       console.warn('[outlook-calendar-read-failure]', JSON.stringify(calendarReadFailure(error)));
       // Never forward upstream errors: they can contain the private subscription URL.
-      throw new Error(`「${name}」日历读取失败，请检查订阅链接与共享范围`);
+      throw new Error(`「${name}」日历读取失败，${calendarReadAdvice(error)}`);
     }
   }));
   const snapshot = buildOutlookSnapshot(events
