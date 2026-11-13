@@ -228,7 +228,9 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     if (req.query?.action === 'plan-details') {
       if (req.method !== 'GET') return res.status(405).json({ error: 'method not allowed' });
       const { readTickTickPlanDetails } = await import('./_ticktickPlanDetails.js');
-      return privateJson(req, res, { details: await readTickTickPlanDetails() });
+      // Snapshot reads must observe cloud updates and the Shanghai day boundary.
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({ details: await readTickTickPlanDetails() });
     }
     if (req.query?.action === 'trigger-replan') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'method not allowed' });

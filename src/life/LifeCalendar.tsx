@@ -177,16 +177,16 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
     <header className="life-header"><div className="life-header-brand"><h1><span className="life-brand-dot" />BonLog</h1>
       <div className="life-orche-actions">
         <button disabled={orche.replanning} title={orche.replanMessage || undefined} onClick={() => void orche.triggerReplan()}>{orche.replanning ? '提交中…' : 'Orche'}</button>
-        <button className="life-plan-trigger" aria-expanded={orche.detailsOpen} aria-controls="life-orche-details" onClick={orche.toggleDetails}>have orchestrated</button>
+        <button className="life-plan-trigger" aria-expanded={orche.detailsOpen} aria-controls="life-orche-details" onClick={orche.toggleDetails}>have orched</button>
       </div></div>
       <div className="life-header-actions"><InstallApp app="log" /><button aria-haspopup="dialog" aria-controls="life-orchestrator" onClick={() => setOrchestratorOpen(true)}>Orchestrator</button>
         <button onClick={() => void logout()} disabled={loggingOut}>{loggingOut ? '退出中…' : '退出'}</button></div></header>
     <span className="sr-only" role="status">{orche.replanning ? '正在提交 Orchestrate…' : orche.replanMessage}</span>
     {orche.replanError && <p className="life-error" role="alert">{orche.replanError}</p>}
     {orche.detailsOpen && <section id="life-orche-details" aria-label="当前排期" aria-busy={orche.detailsLoading}>
-      {orche.detailsLoading ? <p className="life-empty-state" role="status">读取中…</p>
+      {orche.detailsLoading && !orche.planDetails ? <p className="life-empty-state" role="status">读取中…</p>
         : orche.detailsError ? <p className="life-error" role="alert">{orche.detailsError}</p>
-          : orche.planDetails ? <LifePlanDetails plan={orche.planDetails} /> : <p className="life-empty-state">暂无排期记录</p>}
+          : orche.planDetails ? <LifePlanDetails plan={orche.planDetails} /> : <p className="life-empty-state">今日暂无排期记录</p>}
     </section>}
     <div className="life-toolbar">
       <nav className="life-tabs" aria-label="状态日历">{(['skin', 'eyes', 'discomfort', 'mood', 'training', 'done'] as const).map((value) => <button key={value}
