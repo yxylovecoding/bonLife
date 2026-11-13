@@ -6,6 +6,10 @@ import { withActiveRule, withRulePolicy } from './_rulePolicy.js';
 
 export const RULE_CONFIG_KEY = 'ticktick:rules:v1';
 export const RULE_RUN_KEY = 'ticktick:rules:last-run:v1';
+export const PLAN_RUN_KEY = 'ticktick:rules:last-plan-run:v1';
+export class RuleDeferredError extends Error {
+  constructor() { super('日历不可用，保留原安排'); }
+}
 const CONFIG_LOCK = 'ticktick:rules:write-lock:v1';
 export async function readSchedulingRules() {
   const stored = await kv.get(RULE_CONFIG_KEY);
@@ -42,6 +46,7 @@ export async function saveSchedulingRules(value: unknown) {
 }
 
 export function schedulingRuleFailureReason(error: unknown): string {
+  if (error instanceof RuleDeferredError) return error.message;
   const message = error instanceof Error ? error.message : '';
   if (message === 'boncal 当天城市未确认' || message === '当天降雨预报未确认') return message;
   if (message === '待办快照中不存在该任务') return '已关联待办不在本轮快照中，已保留原安排';
@@ -51,7 +56,7 @@ export function schedulingRuleFailureReason(error: unknown): string {
   return error instanceof Error && /^(排期来源暂不可用|地点读取失败，保留当前显隐|模板范围未确认|模板暂不可用|经期来源暂不可用|存在多个洗头来源|数据未刷新|来源未确认|Outlook 订阅读取失败|眼药水重复规则不支持安全跳过，保留原任务|眼药水下一次日期无法确认，保留原任务|眼药水待办已变化，停止跳过|眼药水跳过结果未确认)$/.test(error.message) ? error.message : '本规则未完成，已保留受影响安排';
 }
 
-export type RuleHandler = () => Promise<Partial<Pick<SchedulingRuleResult, 'matched' | 'updated' | 'reason' | 'conflicts'>> | void>;
+export type RuleHandler = () => Promise<Partial<Pick<SchedulingRuleResult, 'matched' | 'updated' | 'reason' | 'conflicts' | 'deferred'>> | void>;
 export async function executeRuleGraph(config: SchedulingRuleConfig, scope: SchedulingRun['scope'], handlers: Partial<Record<SchedulingRuleId, RuleHandler>>,
   options: { save?: boolean; afterRule?: (id: SchedulingRuleId, successful: boolean) => Promise<void> } = {}) {
   config = readRuleConfig(config);
@@ -74,13 +79,14 @@ export async function executeRuleGraph(config: SchedulingRuleConfig, scope: Sche
       console.info('[scheduling-rule]', JSON.stringify({ id, phase: 'start', scope }));
       try {
         const result = await withActiveRule(id, handlers[id]!);
+        if (result?.deferred) unavailable.add(id);
         await options.afterRule?.(id, true);
         run.results.push({ id, status: 'success', matched: 0, updated: 0, ...result });
       } catch (error) {
         unavailable.add(id);
         console.warn('[scheduling-rule-failure]', JSON.stringify({ id, reason: schedulingRuleFailureReason(error) }));
         await options.afterRule?.(id, false);
-        run.results.push({ id, status: 'failed', matched: 0, updated: 0, reason: schedulingRuleFailureReason(error) });
+        run.results.push({ id, status: error instanceof RuleDeferredError ? 'skipped' : 'failed', matched: 0, updated: 0, reason: schedulingRuleFailureReason(error) });
       } finally { console.info('[scheduling-rule]', JSON.stringify({ id, phase: 'end', scope, elapsedMs: Date.now() - started })); }
     }
   }, unavailable);

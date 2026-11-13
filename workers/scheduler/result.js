@@ -65,6 +65,11 @@ export function classify(action, status, body, attempt) {
   const safeRead = readStages.has(body?.failure?.stage) || action === 'full' && body?.failure?.stage === 'completion-archive';
   if (['full', 'hourly-replan'].includes(action) && status === 502 && body?.failure?.retryable === true
       && safeRead && attempt.retries < 2) return retry('retries', 30_000 * (attempt.retries + 1));
+  // The backend committed/verified independent work. Do not replay it or stop
+  // later independent steps merely because a source-dependent rule was held.
+  if ([200, 502].includes(status) && body?.rulesComplete === false && body?.partial === true
+      && !body.busy && Array.isArray(body.rules?.results)
+      && body.rules.results.some(rule => rule.status === 'success')) return { outcome: 'partial', reason: 'rules-incomplete', http: status };
   if (status !== 200 || body?.ok !== true || body.busy || body.error) return fail('incomplete');
   if (typeof body.rulesComplete === 'boolean') return body.rulesComplete ? { outcome: 'success' } : fail('rules-incomplete');
   if (action === 'full') {

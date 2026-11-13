@@ -91,7 +91,9 @@ export class SchedulerQueue {
           } else if (final.outcome === 'failed' && !['life-periods', 'hair-wash'].includes(action)) {
             job.status = 'failed'; job.reason = final.reason;
           } else if (++job.index === job.steps.length) {
-            job.status = job.results.some(item => item.outcome === 'failed') ? 'failed' : 'success';
+            job.status = job.results.some(item => item.outcome === 'failed')
+              ? job.results.some(item => item.outcome === 'partial') ? 'partial' : 'failed'
+              : job.results.some(item => item.outcome === 'partial') ? 'partial' : 'success';
           } else { job.attempt = freshAttempt(); job.nextAt = Date.now() + 1000; }
           if (!pending(job)) job.finishedAt = Date.now();
         }

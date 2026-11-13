@@ -35,7 +35,7 @@ export function useOrchestrate(onExpired: () => void) {
       onProgress: (next, readJobId) => {
         if (jobId.current !== readJobId) return;
         setProgress(next);
-        if (next?.state === 'success' || next?.state === 'failed') jobId.current = undefined;
+        if (next?.state === 'success' || next?.state === 'failed' || next?.state === 'partial') jobId.current = undefined;
       },
     });
     detailsWatcher.current = watcher;

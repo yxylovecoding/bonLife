@@ -27,7 +27,7 @@ const persistedField = (key: string, a: unknown, b: unknown): boolean => same(em
     && Number.isFinite(Date.parse(a)) && Date.parse(a) === Date.parse(b);
 // An undated checklist item has no all-day/time-of-day distinction. TickTick
 // can normalize this flag on reads/writes; it must not cause endless rewrites.
-const fieldChanged = (key: string, a: unknown, b: unknown) => key === 'items'
+const fieldChanged = (key: string, a: unknown, b: unknown) => key === 'items' || key === 'tags'
   ? !persistedField(key, a, b) || !persistedField(key, b, a) : !same(a, b);
 const dateFields = new Set<string>(['startDate', 'dueDate', 'isAllDay', 'timeZone', 'items']);
 const group = (key: string) => dateFields.has(key) ? 'date' : key;
@@ -114,6 +114,32 @@ export class RuleTaskDraft {
     for (const taskId of taskIds) {
       const rules = this.requiredRules.get(taskId) ?? new Set<SchedulingRuleId>();
       rules.add(id); this.requiredRules.set(taskId, rules);
+    }
+  }
+  // Revoke only fields derived from a calendar that could not be published.
+  // Independent fields on the same task still pass the normal commit checks.
+  preserveFields(taskIds: Iterable<string>, field: 'date' | 'hidden') {
+    for (const id of taskIds) {
+      const task = this.tasks.get(id), original = this.original.get(id);
+      if (!task) continue;
+      if (!original) {
+        // There is no previously saved arrangement to restore. Hold this new
+        // task until a normal run can confirm its calendar-dependent fields.
+        this.requireRule('calendar-travel', [id]); continue;
+      }
+      if (field === 'hidden') task.tags = [...(task.tags ?? []).filter(t => !isHiddenTag(t)), ...(original.tags ?? []).filter(isHiddenTag)];
+      else {
+        const owners = this.owners.get(id);
+        for (const key of dateFields) {
+          if (key === 'items' && owners?.has('template-items')) {
+            task.items = task.items?.map(item => {
+              const old = original.items?.find(candidate => candidate.id === item.id);
+              return { ...item, startDate: old?.startDate, isAllDay: old?.isAllDay, timeZone: old?.timeZone };
+            });
+          } else Object.assign(task, { [key]: original[key as keyof TickTickTask] });
+        }
+        for (const key of ['content', 'desc'] as const) if (owners?.get(key) === owners?.get('date')) task[key] = original[key];
+      }
     }
   }
   saveAfterCommit(rule: SchedulingRuleId, save: () => Promise<unknown>, options: { afterAllWrites?: boolean } = {}) {
@@ -338,7 +364,7 @@ export class RuleTaskDraft {
       while ((id = ready())) {
         const task = this.tasks.get(id)!;
         remaining.delete(id);
-        if (!allowed(this.createdBy.get(id))) continue;
+        if (!allowed(this.createdBy.get(id)) || ownerIds(id).some(rule => !allowed(rule))) continue;
         try {
           if (task.parentId?.startsWith('draft-') && !this.realIds.has(task.parentId)) throw new Error('母任务未创建');
           if (task.parentId) {

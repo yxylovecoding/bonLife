@@ -16,7 +16,7 @@ vi.mock('./_accountKv.js', () => ({ kv: {
   set: async (key: string, value: unknown) => { m.data.set(key, structuredClone(value)); return 'OK'; },
 } }));
 vi.mock('./_ticktickLock.js', () => ({ acquireTickTickLock: m.acquire, releaseTickTickLock: m.release }));
-vi.mock('./_outlookSync.js', () => ({ OUTLOOK_CONNECTION_KEY: 'outlook:calendar-connection:v1', syncOutlookCalendar: m.fullOutlook, saveOutlookSnapshot: m.saveOutlook }));
+vi.mock('./_outlookSync.js', () => ({ OUTLOOK_CONNECTION_KEY: 'outlook:calendar-connection:v1', OUTLOOK_READ_STATUS_KEY: 'outlook:calendar-read-status:v1', syncOutlookCalendar: m.fullOutlook, saveOutlookSnapshot: m.saveOutlook }));
 vi.mock('./_outlookCalendar.js', () => ({ decryptOutlookConnection: () => ({ policy: 'manual' }), readOutlookSnapshot: m.snapshot }));
 vi.mock('./_taskVisibilityRules.js', async original => ({ ...await original<typeof import('./_taskVisibilityRules')>(),
   visibilityInputs: async () => ({ journal: m.data.get('journal') ?? {}, locations: m.locationFailure ? null : { names: ['北京', '广州', '清迈'], today: m.city ? [m.city] : [], unknown: !m.city } }) }));
@@ -45,6 +45,89 @@ const hash = createHash('sha256').update('test-token').digest('hex');
 const config = (first: SchedulingRuleId[], predecessors = {}) => { const value = defaultRuleConfig();
   m.data.set('ticktick:rules:v1', readRuleConfig({ ...value, version: 7, order: [...first, ...value.order.filter(id => !first.includes(id))], predecessors })); };
 const status = (result: any, id: SchedulingRuleId) => result.rules.results.find((r: any) => r.id === id);
+
+describe('日历故障隔离与恢复', () => {
+  const fail = () => {
+    m.data.set('outlook:calendar-connection:v1', { id: 'outlook', encrypted: 'fixture' });
+    m.fullOutlook.mockRejectedValue(new Error('private provider failure'));
+    m.snapshot.mockRejectedValue(new Error('private provider failure'));
+  };
+  it.each(['full', 'hourly'] as const)('%s 独立日期与阅读照常，地点任务和旧计划保持原样；恢复后正常核对且不重复写', async scope => {
+    fail();
+    const original = task('located', { tags: ['always-today', '居', 'hidden', 'routine'], priority: 5,
+      dueDate: '2026-11-04T00:00:00+0800', repeatFlag: 'RRULE:FREQ=DAILY' });
+    m.tasks = [task('plain', { tags: ['always-today', 'routine'], priority: 5, dueDate: '2026-11-04T00:00:00+0800' }),
+      task('reading', { title: '阅读', tags: ['hidden', 'routine'] }), structuredClone(original)];
+    const old = { connectionId: hash, history: [], deadlines: {}, summary: { date: '2026-11-02', todayCount: 1 },
+      briefing: { date: '2026-11-02', selected: [], rules: { generatedAt: '2026-11-02T01:00:00Z' } } };
+    m.data.set(DAILY_PLAN_KEY, old);
+    const result = await runRuleReplan({ scope });
+    expect(result).toMatchObject({ partial: true, rulesComplete: false });
+    expect(status(result, 'always-today')).toMatchObject({ status: 'success', deferred: 1, updated: 1 });
+    expect(status(result, 'daily-plan')).toMatchObject({ status: 'skipped', reason: '日历不可用，保留原安排' });
+    expect(m.tasks[0].dueDate).toContain(day); expect(m.tasks[1].tags).toEqual(['routine']); expect(m.tasks[2]).toEqual(original);
+    expect(m.data.get(DAILY_PLAN_KEY).briefing).toEqual(old.briefing);
+    expect(m.hairOutlook).not.toHaveBeenCalled();
+    const writes = m.write.mock.calls.length;
+    await runRuleReplan({ scope }); expect(m.write).toHaveBeenCalledTimes(writes); expect(m.create).not.toHaveBeenCalled();
+    m.fullOutlook.mockResolvedValue({ connected: false });
+    m.snapshot.mockResolvedValue({ startDate: day, endDate: '2026-12-03', tags: {}, availability: { startDate: day, endDate: '2026-12-03', events: [] } });
+    const recovered = await runRuleReplan({ scope });
+    expect(status(recovered, 'always-today').deferred).toBe(0);
+    expect(m.tasks[2].dueDate).toContain(day);
+    const recoveredWrites = m.write.mock.calls.length;
+    await runRuleReplan({ scope }); expect(m.write).toHaveBeenCalledTimes(recoveredWrites); expect(m.create).not.toHaveBeenCalled();
+  });
+  it('部分完成不能满足用户绑定的前序；独立心愿仍提交，重跑复用已确认实例', async () => {
+    fail(); config([], { 'moving-date': ['always-today'] });
+    m.tasks = [task('held', { tags: ['always-today', '居'] })];
+    m.wish.mockImplementation(async ({ api, state, saveState }) => {
+      if (state.wishInstances?.one) return;
+      const created = await api.createTask({ projectId: 'life', title: '心愿准备', tags: ['routine'] });
+      state.wishInstances = { one: { rootTaskId: created.id, taskIdsByTemplateId: {} } };
+      await saveState(state);
+    });
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'moving-date').status).toBe('skipped');
+    expect(status(result, 'wishes')).toMatchObject({ status: 'success', updated: 1 });
+    await runRuleReplan({ scope: 'full' }); expect(m.create).toHaveBeenCalledOnce();
+  });
+  it('故障时仍尊重当天完成和放弃；历史失败不能强行固定今日', async () => {
+    fail();
+    m.tasks = ['completed', 'abandoned', 'plain'].map(id => task(id, { title: id, tags: ['always-today', 'routine'],
+      dueDate: '2026-11-04T00:00:00+0800', repeatFlag: 'RRULE:FREQ=DAILY' }));
+    m.history = [{ ...m.tasks[0], status: 2, completedTime: `${day}T09:00:00+08:00` }];
+    m.abandoned = [{ ...m.tasks[1], status: -1, completedTime: `${day}T09:00:00+08:00` }];
+    await runRuleReplan({ scope: 'full' });
+    expect(m.tasks.slice(0, 2).every(task => task.dueDate?.startsWith('2026-11-04'))).toBe(true);
+    expect(m.tasks[2].dueDate).toContain(day);
+    m.tasks[2].dueDate = '2026-11-04T00:00:00+0800'; m.write.mockClear(); m.historyRead.mockRejectedValue(new Error('history failure'));
+    await runRuleReplan({ scope: 'full' }); expect(m.write).not.toHaveBeenCalled();
+  });
+  it('日历保存失败只撤销依赖日历的字段，独立日期和阅读仍写入', async () => {
+    m.fullOutlook.mockResolvedValue({ connected: true, snapshot: { startDate: day, endDate: '2026-12-03', tags: {} },
+      connection: { id: 'outlook' }, policy: 'manual', requestedAt: Date.now() });
+    m.saveOutlook.mockRejectedValue(new Error('version changed'));
+    m.tasks = [task('plain', { tags: ['always-today', 'routine'], dueDate: '2026-11-04T00:00:00+0800' }),
+      task('located', { tags: ['always-today', '居', 'routine'], dueDate: '2026-11-04T00:00:00+0800' }),
+      task('reading', { title: '阅读', tags: ['hidden', 'routine'] })];
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(result.partial).toBe(true); expect(status(result, 'always-today').deferred).toBe(1);
+    expect(m.tasks[0].dueDate).toContain(day); expect(m.tasks[1].dueDate).toContain('2026-11-04');
+    expect(m.tasks[2].tags).toEqual(['routine']);
+  });
+  it.each(['expired', 'failed', 'different-connection', 'future', 'yesterday'])('显隐不把 %s 日历缓存当作确认地点，阅读独立运行', async kind => {
+    if (kind === 'yesterday') vi.setSystemTime(new Date(`${day}T00:05:00+08:00`));
+    m.data.set('outlook:calendar-connection:v1', { id: 'outlook', encrypted: 'fixture' });
+    m.data.set('outlook:calendar-read-status:v1', { connectionId: kind === 'different-connection' ? 'old' : 'outlook',
+      syncedAt: new Date(Date.now() + (kind === 'future' ? 60_000 : kind === 'expired' ? -16 * 60_000 : kind === 'yesterday' ? -10 * 60_000 : -60_000)).toISOString(),
+      ...(kind === 'failed' ? { error: 'unavailable' } : {}) });
+    m.tasks = [task('located', { title: '阅读', tags: ['居', 'hidden', 'routine'] }), task('reading', { title: '阅读', tags: ['hidden', 'routine'] })];
+    const result = await runRuleReplan({ scope: 'visibility' });
+    expect(result.partial).toBe(true); expect(m.tasks[0].tags).toContain('hidden'); expect(m.tasks[1].tags).toEqual(['routine']);
+    expect(m.fullOutlook).not.toHaveBeenCalled(); expect(m.snapshot).not.toHaveBeenCalled();
+  });
+});
 
 it.each(['full', 'hourly', 'visibility'] as const)('%s 删除阅读显隐后不再改变对应标签，独立规则照常完成', async scope => {
   const saved = removeSchedulingRule(readRuleConfig(defaultRuleConfig()), 'visibility-reading');
@@ -239,7 +322,7 @@ describe('统一显隐裁决', () => {
   });
   it('地点读取失败保留原显隐，并标记失败而非误判地点', async () => {
     m.locationFailure = true; m.tasks = [task('r', { title: '阅读', tags: ['广州', 'hidden'] })];
-    const result = await runRuleReplan({ scope: 'visibility' }); expect(status(result, 'visibility-location').status).toBe('failed');
+    const result = await runRuleReplan({ scope: 'visibility' }); expect(status(result, 'visibility-location')).toMatchObject({ status: 'success', deferred: 1 });
     expect(m.write).not.toHaveBeenCalled(); expect(m.tasks[0].tags).toContain('hidden');
   });
   it('无日期改动的显隐入口不会调用完整日历、生成任务或专项排期', async () => {
@@ -346,7 +429,7 @@ describe('城市待办日期', () => {
     m.locationFailure = true;
     m.tasks = [task('bedtime', { tags: ['always-today', '北京', '居', 'hidden'] })];
     const result = await runRuleReplan({ scope: 'hourly' });
-    expect(status(result, 'always-today').status).toBe('failed');
+    expect(status(result, 'always-today')).toMatchObject({ status: 'success', deferred: 1 });
     expect(m.write).not.toHaveBeenCalled();
   });
   it.each(['full', 'hourly'] as const)('%s 喷雾地点与错日共同满足，不锁住逾期日，重复运行不漂移', async scope => {
@@ -905,10 +988,10 @@ describe('雨天关窗独立于 Outlook 刷新', () => {
   };
   it.each(['full', 'hourly'] as const)('%s Outlook 读取失败仍按已保存 boncal 城市查雨，回读确认且同日不重复', async scope => {
     failOutlook();
-    const original = task('keep', { tags: ['always-today'], dueDate: '2026-11-04T00:00:00+0800' });
+    const original = task('keep', { tags: ['always-today', '居'], dueDate: '2026-11-04T00:00:00+0800' });
     m.tasks = [structuredClone(original)];
     const result = await runRuleReplan({ scope });
-    expect(status(result, 'calendar-travel').status).toBe('failed');
+    expect(status(result, 'calendar-travel')).toMatchObject({ status: 'skipped', reason: '日历不可用，保留原安排' });
     expect(status(result, 'daily-plan').status).not.toBe('success');
     expect(status(result, 'rain-reminder')).toMatchObject({ status: 'success', updated: 1 });
     expect(m.weather).toHaveBeenCalledWith(expect.objectContaining(GUANGZHOU), day, day, 'Asia/Shanghai');
@@ -935,12 +1018,12 @@ describe('雨天关窗独立于 Outlook 刷新', () => {
     m.fullOutlook.mockResolvedValue({ connected: true,
       snapshot: { startDate: day, endDate: '2026-12-03', tags: {} }, connection: { id: 'outlook' }, policy: 'manual', requestedAt: Date.now() });
     m.saveOutlook.mockRejectedValue(new Error('calendar write unavailable'));
-    const original = task('keep', { tags: ['always-today'], dueDate: '2026-11-04T00:00:00+0800' });
+    const original = task('keep', { tags: ['always-today', '居'], dueDate: '2026-11-04T00:00:00+0800' });
     m.tasks = [structuredClone(original)];
     const result = await runRuleReplan({ scope: 'full' });
     expect(status(result, 'rain-reminder')).toMatchObject({ status: 'success', updated: 1 });
     expect(status(result, 'calendar-travel').status).toBe('failed');
-    expect(status(result, 'always-today').status).toBe('skipped');
+    expect(status(result, 'always-today')).toMatchObject({ status: 'success', deferred: 1 });
     expect(result.rulesComplete).toBe(false);
     expect(m.tasks.find(t => t.id === 'keep')).toEqual(original);
     expect(m.write).not.toHaveBeenCalled(); expect(m.data.get(key)).toBe(day);
@@ -975,12 +1058,12 @@ describe('雨天关窗独立于 Outlook 刷新', () => {
     m.fullOutlook.mockResolvedValue({ connected: true, snapshot: { startDate: day, endDate: '2026-12-03', tags: {} },
       connection: { id: 'outlook' }, policy: 'manual', requestedAt: Date.now() });
     m.saveOutlook.mockRejectedValue(new Error('calendar write unavailable'));
-    const original = task('old-rain', { title: '关窗', tags: ['活', '当天', 'always-today'], isAllDay: false,
+    const original = task('old-rain', { title: '关窗', tags: ['活', '当天', 'always-today', '居'], isAllDay: false,
       startDate: '2026-11-02T08:00:00+0800', dueDate: '2026-11-02T08:00:00+0800', reminders: ['TRIGGER:PT0S'] });
     m.tasks = [structuredClone(original)];
     for (let attempt = 0; attempt < 2; attempt++) {
       const result = await runRuleReplan({ scope: 'full' });
-      expect(status(result, 'always-today').status).toBe('skipped');
+      expect(status(result, 'always-today')).toMatchObject({ status: 'success', deferred: 1 });
       expect(status(result, 'rain-reminder')).toMatchObject({ status: 'failed', reason: '当天关窗任务未确认，保留重试机会' });
       expect(m.tasks).toEqual([original]); expect(m.data.has(key)).toBe(false);
     }

@@ -211,7 +211,7 @@ export default function LifeSchedulingRules({ onExpired, onManageOutlook }: { on
           const result = data.lastRun?.results.find(r => r.id === id);
           return <li key={id} value={data.config.order.indexOf(id) + 1}><div className="schedule-rule-heading">
             <span className="schedule-number">{data.config.order.indexOf(id) + 1}</span><strong>{ruleTitle(id, data.config)}</strong>
-            <span>{result?.status === 'success' ? `已执行 · ${result.matched} 项` : result?.status === 'failed' ? '失败' : result?.status === 'skipped' ? '跳过' : ''}</span></div>
+            <span>{result?.status === 'success' ? `${result.deferred ? '部分完成' : '已执行'} · ${result.matched} 项${result.deferred ? ` · 暂缓 ${result.deferred} 项` : ''}` : result?.status === 'failed' ? '失败' : result?.status === 'skipped' ? '暂缓／跳过' : ''}</span></div>
             <p>{SCHEDULING_RULES.find(rule => rule[0] === id)![2]}</p>
             <RuleTags tags={data.config.tags?.[id]} name={ruleTitle(id, data.config)} />
             {!!data.config.predecessors[id]?.length && <div className="schedule-predecessors">前序：{data.config.predecessors[id]!.map(rule => ruleTitle(rule, data.config)).join('、')}</div>}

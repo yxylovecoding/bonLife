@@ -187,6 +187,21 @@ function fixture() {
   return { ctx, env, queue, enqueue, tick, state: () => ctx.storage.get('state') };
 }
 describe('durable serial execution', () => {
+  it('部分显隐继续经期和完整排程，保留部分结果且不重放已确认步骤', async () => {
+    const partial = { ok: true, partial: true, rulesComplete: false, error: 'some rules held',
+      rules: { results: [{ id: 'visibility-reading', status: 'success' }, { id: 'visibility-location', status: 'skipped' }] } };
+    const f = fixture();
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json(partial))
+      .mockResolvedValueOnce(Response.json({ ok: true, connected: false }))
+      .mockResolvedValueOnce(Response.json(partial, { status: 502 }));
+    vi.stubGlobal('fetch', fetcher);
+    await f.enqueue([manualJob('full', 'partial', Date.now())]);
+    await f.tick(); await f.tick(); await f.tick(); await f.tick();
+    expect((await f.state()).jobs[0]).toMatchObject({ status: 'partial', index: 3,
+      results: [{ action: 'routine-visibility', outcome: 'partial' }, { action: 'life-periods', outcome: 'success' }, { action: 'full', outcome: 'partial' }] });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(classify('full', 200, { ...partial, rules: { results: [] } }, attempt).outcome).toBe('failed');
+  });
   it('persists readiness retries across alarms without replaying the business action', async () => {
     const f = fixture(); f.env.ORIGIN = 'https://bonbills.onrender.com';
     const fetcher = vi.fn().mockResolvedValueOnce(new Response('Bad Gateway', { status: 502 }))

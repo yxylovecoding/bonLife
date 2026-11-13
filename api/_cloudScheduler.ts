@@ -31,7 +31,7 @@ export async function readCloudSchedulerStatus() {
     throw new Error(`云端调度状态读取失败（HTTP ${response.status}）`);
   const actions = new Set(['full', 'hourly-replan', 'life-periods', 'daily-routine', 'routine-visibility',
     'night-routine', 'reading-visibility', 'hair-wash', 'monthly-backup', 'daily-email']);
-  const statuses = new Set(['queued', 'running', 'success', 'failed', 'skipped']);
+  const statuses = new Set(['queued', 'running', 'success', 'partial', 'failed', 'skipped']);
   const reasons = new Set(['interrupted-response-unknown', 'rest-window', 'expired', 'batch-limit',
     'backup-incomplete', 'period-import', 'busy', 'incomplete', 'rules-incomplete', 'plan-incomplete',
     'visibility-incomplete', 'email-cancelled', 'missing-run-secret', 'response-unknown', 'origin-not-ready']);
