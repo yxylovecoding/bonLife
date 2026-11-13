@@ -151,12 +151,13 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       const enabledVisibility = config.order.filter(id => visibilityRules.includes(id) && !config.removed?.includes(id));
       const handlers: Partial<Record<SchedulingRuleId, RuleHandler>> = {};
       const calendarDependent = new Set<SchedulingRuleId>();
-      const plan = (id: SchedulingRuleId, callback: (branch: ReturnType<RuleTaskDraft['branch']>) => Promise<void>, needsHistory = true) => {
-        if (needsHistory) calendarDependent.add(id);
+      const plan = (id: SchedulingRuleId, callback: (branch: ReturnType<RuleTaskDraft['branch']>) => Promise<{ reason: string } | void>,
+        sources: { history?: boolean; calendar?: boolean } = { history: true, calendar: true }) => {
+        if (sources.calendar) calendarDependent.add(id);
         handlers[id] = async () => {
-          if (needsHistory && (historyError || calendarError)) throw new Error('排期来源暂不可用');
+          if (sources.history && historyError || sources.calendar && calendarError) throw new Error('排期来源暂不可用');
           const branch = draft.branch(id);
-          try { await callback(branch); return { ...branch.accept(), ...visibilityReports[id] }; } catch (error) { branch.reject(); throw error; }
+          try { const outcome = await callback(branch); return { ...branch.accept(), ...outcome, ...visibilityReports[id] }; } catch (error) { branch.reject(); throw error; }
         };
       };
       for (const id of options.specialty ? [] : visibilityRules) {
@@ -184,18 +185,21 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             await branch.api.updateTask(task.id, { ...task, tags: nextTags,
               ...(id === 'visibility-night' ? { priority: 5 } : {}) });
           }
-        }, false);
+        }, {});
       }
       const sleeping = Boolean(options.scheduled && sleepWindow(now).hidden);
       if (options.scope !== 'visibility' && !options.specialty) {
         plan('rain-reminder', async branch => {
-          await planRainReminder(branch.api, { connectionId, projectId: connection.projectId,
-            tasks: draft.values(), completedTasks: state.history, calendarState, now,
+          // Use the saved boncal snapshot, as the calendar's weather view does.
+          // An uncommitted Outlook refresh is not a prerequisite or a city source.
+          const outcome = await planRainReminder(branch.api, { connectionId, projectId: connection.projectId,
+            tasks: draft.values(), completedTasks: state.history, calendarState: storedCalendar ?? {}, now,
             deferState: save => draft.saveAfterCommit('rain-reminder', save) });
           const reminders = draft.values().filter(isRainReminder);
           for (const task of reminders) excluded.add(task.id);
           branch.claimDates(reminders.map(task => task.id));
-        });
+          return outcome;
+        }, { history: true });
       }
       if (options.scope !== 'visibility' && !sleeping) {
         handlers['eye-drops'] = async () => {
@@ -212,7 +216,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           });
           branch.claimDates(result.managedTaskIds.filter(taskId => draft.values().some(task => task.id === taskId && pending(task))));
           for (const taskId of result.managedTaskIds) excluded.add(taskId);
-        }, false);
+        }, {});
       }
       if (options.scope !== 'visibility' || ['daily', 'all'].includes(options.visibilityKind ?? '')) {
         plan('always-today', async branch => {
@@ -549,12 +553,25 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       }
       // Validate/publish the calendar before committing tasks. A later subscription
       // refresh must not erase the trace of task writes already confirmed below.
+      let calendarSaveFailed = false;
       if (outlookSnapshot?.connected && ['calendar-travel', 'calendar-home', 'calendar-intern', 'calendar-manual'].every(id => allowed(id as SchedulingRuleId))) {
-        await saveOutlookSnapshot(outlookSnapshot.connection, outlookSnapshot.snapshot, outlookSnapshot.policy, outlookSnapshot.requestedAt);
+        try {
+          await saveOutlookSnapshot(outlookSnapshot.connection, outlookSnapshot.snapshot, outlookSnapshot.policy, outlookSnapshot.requestedAt);
+        } catch {
+          calendarSaveFailed = true;
+          // Preserve the existing stop-on-save-failure protection for all other
+          // proposals. Rain uses the previously saved calendar and can commit.
+          for (const result of run.results) if (handlers[result.id] && result.status === 'success' && result.id !== 'rain-reminder') {
+            result.status = result.id.startsWith('calendar-') ? 'failed' : 'skipped';
+            result.reason = '日历保存未确认，保留原安排';
+          }
+          console.warn('[scheduling-calendar-save-failure]', '日历保存未确认，保留原安排');
+          propagate();
+        }
       }
       let updated: number;
       try {
-        updated = await draft.commit({ order: config.order, allowed,
+        updated = await draft.commit({ order: config.order, allowed, createOnly: calendarSaveFailed,
           beforeUpdate: async task => {
             if (!nextBudgetHidden?.[task.id] || budgetHidden[task.id] || !allowed('daily-plan') || !hasHiddenTag(task)) return;
             // Record ownership after the concurrency check and before the external

@@ -86,6 +86,29 @@ function client(original = task()) {
   return { api: api as unknown as TickTickApi, tasks, write: api.updateTask };
 }
 describe('最终任务改动裁决', () => {
+  it('仅补建模式保留所有既有待办，只提交允许的新任务并回读', async () => {
+    const original = task({ tags: undefined }), removed = task({ id: 'two' });
+    const c = client(original); c.tasks.set('two', structuredClone(removed));
+    c.api.deleteTask = vi.fn().mockResolvedValue(undefined);
+    c.api.createTask = vi.fn(async payload => {
+      const created = { ...payload, id: 'rain', status: 0 } as TickTickTask;
+      c.tasks.set('rain', created); return structuredClone(created);
+    });
+    const draft = new RuleTaskDraft(c.api, [original, removed]);
+    const dates = draft.branch('always-today');
+    await dates.api.updateTask('one', { dueDate: '2026-11-03T00:00:00+0800', tags: ['hidden'] }); dates.accept();
+    const deletion = draft.branch('template-content');
+    await deletion.api.deleteTask('p', 'two'); deletion.accept();
+    const rain = draft.branch('rain-reminder');
+    await rain.api.createTask({ projectId: 'p', title: '关窗', dueDate: '2026-11-03T08:00:00+0800', reminders: ['TRIGGER:PT0S'] }); rain.accept();
+    const failed = vi.fn();
+    await expect(draft.commit({ createOnly: true, order: ['always-today', 'template-content', 'rain-reminder'],
+      allowed: id => id === 'rain-reminder', failed, afterRule: async () => {} })).resolves.toBe(1);
+    expect(failed).not.toHaveBeenCalled(); expect(c.write).not.toHaveBeenCalled(); expect(c.api.deleteTask).not.toHaveBeenCalled();
+    expect(c.tasks.get('one')).toEqual(original); expect(c.tasks.get('two')).toEqual(removed);
+    expect(c.api.createTask).toHaveBeenCalledOnce(); expect(c.api.getTask).toHaveBeenCalledWith('p', 'rain');
+  });
+
   it('按 ID 补读的既有任务加入同一快照，更新保留原 ID 并经过写前及写后核验', async () => {
     const c = client(), draft = new RuleTaskDraft(c.api, []);
     const branch = draft.branch('trips');

@@ -9,7 +9,7 @@ import type { TickTickTask } from './_ticktickTrips';
 
 const m = vi.hoisted(() => ({ data: new Map<string, any>(), tasks: [] as TickTickTask[], history: [] as TickTickTask[], abandoned: [] as TickTickTask[], abandonedRead: vi.fn(),
   get: vi.fn(), write: vi.fn(), create: vi.fn(), historyRead: vi.fn(), snapshot: vi.fn(), fullOutlook: vi.fn(), saveOutlook: vi.fn(),
-  acquire: vi.fn(), release: vi.fn(), rain: vi.fn(), laundry: vi.fn(), exercise: vi.fn(), hairOutlook: vi.fn(), chargingOutlook: vi.fn(),
+  acquire: vi.fn(), release: vi.fn(), rain: vi.fn(), weather: vi.fn(), laundry: vi.fn(), exercise: vi.fn(), hairOutlook: vi.fn(), chargingOutlook: vi.fn(),
   trip: vi.fn(), wish: vi.fn(), period: vi.fn(), pickupOutlook: vi.fn(), tagsRead: vi.fn(), locationFailure: false, city: '北京' }));
 vi.mock('./_accountKv.js', () => ({ kv: {
   get: async (key: string) => structuredClone(m.data.get(key) ?? null), hgetall: async (key: string) => structuredClone(m.data.get(key) ?? null),
@@ -29,6 +29,7 @@ vi.mock('./_outlookLaundry.js', () => ({ syncLaundryOutlook: async () => ({ crea
 vi.mock('./_outlookRecurringTaskEvents.js', () => ({ syncRecurringTaskOutlook: m.pickupOutlook }));
 vi.mock('./_ticktickPeriodPrediction.js', () => ({ syncPeriodPredictionTask: m.period }));
 vi.mock('./_ticktickRainReminder.js', async original => ({ ...await original<typeof import('./_ticktickRainReminder')>(), planRainReminder: m.rain }));
+vi.mock('./_dailyWeather.js', () => ({ readDailyWeather: m.weather }));
 vi.mock('./_ticktickTrips.js', async original => ({ ...await original<typeof import('./_ticktickTrips')>(),
   decryptTickTickToken: () => 'test-token', readAllTickTickTasks: async (api: any, statuses: number[]) => api.filterTasks
     ? api.filterTasks([], statuses) : structuredClone(m.tasks.filter(t => statuses.includes(t.status ?? 0))),
@@ -550,7 +551,9 @@ describe('日期优先级与失败传播', () => {
       if (stale) throw new Error('日历已更新，请重新同步');
     });
     if (stale) {
-      await expect(runRuleReplan({ scope: 'full' })).rejects.toThrow('日历已更新');
+      const result = await runRuleReplan({ scope: 'full' });
+      expect(status(result, 'calendar-travel')).toMatchObject({ status: 'failed', reason: '日历保存未确认，保留原安排' });
+      expect(status(result, 'daily-plan').status).toBe('skipped'); expect(result.rulesComplete).toBe(false);
       expect(m.write).not.toHaveBeenCalled(); expect(m.tasks[0].dueDate).toContain(day);
     } else {
       const result = await runRuleReplan({ scope: 'full' });
@@ -884,4 +887,88 @@ it('独立显隐与删除雨天规则不调用关窗生成', async () => {
   await runRuleReplan({ scope: 'visibility' }); expect(m.rain).not.toHaveBeenCalled();
   m.data.set('ticktick:rules:v1', removeSchedulingRule(readRuleConfig(defaultRuleConfig()), 'rain-reminder'));
   await runRuleReplan({ scope: 'full' }); expect(m.rain).not.toHaveBeenCalled();
+});
+
+describe('雨天关窗独立于 Outlook 刷新', () => {
+  const key = `ticktick:rain-reminder:v1:${hash}`;
+  beforeEach(async () => {
+    vi.setSystemTime(new Date(`${day}T07:01:00+08:00`));
+    const actual = await vi.importActual<typeof import('./_ticktickRainReminder')>('./_ticktickRainReminder');
+    m.rain.mockImplementation(actual.planRainReminder);
+    m.data.set('app-config', { config: { schoolCity: GUANGZHOU, homeCity: BEIJING } });
+    m.data.set('outlook:calendar-connection:v1', { id: 'outlook', encrypted: 'fixture' });
+    m.weather.mockResolvedValue({ days: { [day]: { code: 61, precipitation: 2 } }, stale: false });
+  });
+  const failOutlook = () => {
+    m.fullOutlook.mockRejectedValue(new Error('subscription unavailable'));
+    m.snapshot.mockRejectedValue(new Error('subscription unavailable'));
+  };
+  it.each(['full', 'hourly'] as const)('%s Outlook 读取失败仍按已保存 boncal 城市查雨，回读确认且同日不重复', async scope => {
+    failOutlook();
+    const original = task('keep', { tags: ['always-today'], dueDate: '2026-11-04T00:00:00+0800' });
+    m.tasks = [structuredClone(original)];
+    const result = await runRuleReplan({ scope });
+    expect(status(result, 'calendar-travel').status).toBe('failed');
+    expect(status(result, 'daily-plan').status).not.toBe('success');
+    expect(status(result, 'rain-reminder')).toMatchObject({ status: 'success', updated: 1 });
+    expect(m.weather).toHaveBeenCalledWith(expect.objectContaining(GUANGZHOU), day, day, 'Asia/Shanghai');
+    const reminder = m.tasks.find(t => t.title === '关窗')!;
+    expect(reminder).toMatchObject({ startDate: `${day}T08:00:00+0800`, dueDate: `${day}T08:00:00+0800`,
+      tags: expect.arrayContaining(['活', '当天']), reminders: ['TRIGGER:PT0S'] });
+    expect(m.get).toHaveBeenCalledWith('life', reminder.id);
+    expect(m.data.get(key)).toBe(day);
+    expect(m.tasks.find(t => t.id === 'keep')).toEqual(original);
+    await runRuleReplan({ scope });
+    expect(m.create).toHaveBeenCalledOnce(); expect(m.weather).toHaveBeenCalledOnce();
+  });
+  it.each(['full', 'hourly'] as const)('%s 城市只取已保存 boncal，不提前使用本轮 Outlook 的未保存场景', async scope => {
+    const snapshot = { startDate: day, endDate: '2026-12-03', tags: { [day]: 'home' },
+      availability: { startDate: day, endDate: '2026-12-03', events: [] } };
+    m.snapshot.mockResolvedValue(snapshot);
+    m.fullOutlook.mockResolvedValue({ connected: true, snapshot, availability: snapshot.availability,
+      connection: { id: 'outlook' }, policy: 'outlook', requestedAt: Date.now() });
+    const result = await runRuleReplan({ scope });
+    expect(status(result, 'rain-reminder').status).toBe('success');
+    expect(m.weather).toHaveBeenCalledWith(expect.objectContaining(GUANGZHOU), day, day, 'Asia/Shanghai');
+  });
+  it('Outlook 保存失败仍可提交关窗，其余排期保留且没有虚报整轮成功', async () => {
+    m.fullOutlook.mockResolvedValue({ connected: true,
+      snapshot: { startDate: day, endDate: '2026-12-03', tags: {} }, connection: { id: 'outlook' }, policy: 'manual', requestedAt: Date.now() });
+    m.saveOutlook.mockRejectedValue(new Error('calendar write unavailable'));
+    const original = task('keep', { tags: ['always-today'], dueDate: '2026-11-04T00:00:00+0800' });
+    m.tasks = [structuredClone(original)];
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'rain-reminder')).toMatchObject({ status: 'success', updated: 1 });
+    expect(status(result, 'calendar-travel').status).toBe('failed');
+    expect(status(result, 'always-today').status).toBe('skipped');
+    expect(result.rulesComplete).toBe(false);
+    expect(m.tasks.find(t => t.id === 'keep')).toEqual(original);
+    expect(m.write).not.toHaveBeenCalled(); expect(m.data.get(key)).toBe(day);
+  });
+  it('无可确认城市时失败并保留重试机会，不将旧 Outlook 日程当作城市', async () => {
+    failOutlook(); m.data.set('app-config', { config: {} });
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'rain-reminder')).toMatchObject({ status: 'failed', reason: 'boncal 当天城市未确认' });
+    expect(m.weather).not.toHaveBeenCalled(); expect(m.create).not.toHaveBeenCalled(); expect(m.data.has(key)).toBe(false);
+  });
+  it('Outlook 失败时仍保留历史读取和任务回读保护', async () => {
+    failOutlook(); m.historyRead.mockRejectedValue(new Error('history unavailable'));
+    const historyFailed = await runRuleReplan({ scope: 'full' });
+    expect(status(historyFailed, 'rain-reminder').status).toBe('failed');
+    expect(m.create).not.toHaveBeenCalled(); expect(m.data.has(key)).toBe(false);
+    m.historyRead.mockResolvedValue([]); m.get.mockResolvedValue(undefined);
+    const writeUnconfirmed = await runRuleReplan({ scope: 'full' });
+    expect(status(writeUnconfirmed, 'rain-reminder').status).toBe('failed');
+    expect(m.create).toHaveBeenCalledOnce(); expect(m.data.has(key)).toBe(false);
+    m.get.mockImplementation(async (_project, id) => structuredClone(m.tasks.find(t => t.id === id)));
+    const recovered = await runRuleReplan({ scope: 'full' });
+    expect(status(recovered, 'rain-reminder').status).toBe('success');
+    expect(m.create).toHaveBeenCalledOnce(); expect(m.data.get(key)).toBe(day);
+  });
+  it('用户显式绑定的 Outlook 前序依赖仍受尊重', async () => {
+    failOutlook(); config([], { 'rain-reminder': ['calendar-travel'] });
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'rain-reminder').status).toBe('skipped');
+    expect(m.weather).not.toHaveBeenCalled(); expect(m.create).not.toHaveBeenCalled(); expect(m.data.has(key)).toBe(false);
+  });
 });

@@ -21,12 +21,12 @@ beforeEach(() => { vi.resetAllMocks(); m.store.clear();
 describe('boncal 晨间雨天关窗', () => {
   it.each(['00:01', '04:59', '05:00', '12:00', '20:00'])('%s 不查天气或消耗当天机会', async time => {
     const o = options(); o.now = new Date(`${day}T${time}:00+08:00`);
-    await planRainReminder({} as TickTickApi, o);
+    expect(await planRainReminder({} as TickTickApi, o)).toEqual({ reason: '不在晨间检查时段（05:01–11:59）' });
     expect(m.locations).not.toHaveBeenCalled(); expect(o.deferState).not.toHaveBeenCalled();
   });
   it('按本轮 boncal 城市创建 08:00 定时提醒，只有提交后才记录当天', async () => {
     const createTask = vi.fn().mockResolvedValue(reminder()), o = options();
-    await planRainReminder({ createTask } as unknown as TickTickApi, o);
+    expect(await planRainReminder({ createTask } as unknown as TickTickApi, o)).toEqual({ reason: '有雨，已生成当天 08:00 关窗提醒' });
     expect(m.locations).toHaveBeenCalledWith(day, day, o.calendarState);
     expect(m.weather).toHaveBeenCalledWith(city, day, day, 'Asia/Shanghai');
     expect(createTask).toHaveBeenCalledWith({ projectId: 'life', title: '关窗', startDate: `${day}T08:00:00+0800`,
@@ -34,7 +34,7 @@ describe('boncal 晨间雨天关窗', () => {
       tags: ['活', '当天'], reminders: ['TRIGGER:PT0S'] });
     expect(m.store.has(key)).toBe(false);
     await o.deferState.mock.calls[0][0]();
-    await planRainReminder({ createTask } as unknown as TickTickApi, o);
+    expect(await planRainReminder({ createTask } as unknown as TickTickApi, o)).toEqual({ reason: '当天已检查' });
     expect(createTask).toHaveBeenCalledOnce(); expect(m.weather).toHaveBeenCalledOnce();
   });
   it.each([[0, 0, false], [51, 0, true], [95, 0, true], [undefined, 1, true], [75, 2, false]])('天气 %s / %s 判断雨天 %s', async (code, precipitation, rain) => {
@@ -45,7 +45,7 @@ describe('boncal 晨间雨天关窗', () => {
   });
   it.each([0, 2, -1])('同日已有状态 %s 的关窗任务不重复创建', async status => {
     const o = options(); o.completedTasks = [reminder(status)];
-    await planRainReminder({} as TickTickApi, o);
+    expect(await planRainReminder({} as TickTickApi, o)).toEqual({ reason: '已有同日关窗，不重复创建' });
     expect(m.weather).not.toHaveBeenCalled(); expect(o.deferState).toHaveBeenCalledOnce();
   });
   it.each([{ locations: [] }, { locations: [city, { ...city, name: '北京' }] }])('没有唯一城市时保留重试机会', async ({ locations }) => {
@@ -60,7 +60,7 @@ describe('boncal 晨间雨天关窗', () => {
   });
   it('前一天成功不阻止今天；晴天也只查一次', async () => {
     m.store.set(key, '2026-11-11'); m.weather.mockResolvedValue(forecast(0, 0)); const o = options();
-    await planRainReminder({} as TickTickApi, o); await o.deferState.mock.calls[0][0]();
+    expect(await planRainReminder({} as TickTickApi, o)).toEqual({ reason: '当天预报无雨，无需关窗提醒' }); await o.deferState.mock.calls[0][0]();
     await planRainReminder({} as TickTickApi, o); expect(m.weather).toHaveBeenCalledOnce();
   });
   it.each([true, false])('真实草稿提交回读成功=%s，成功才持久化，失败后按已创建任务恢复', async confirmed => {

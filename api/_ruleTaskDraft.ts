@@ -261,11 +261,14 @@ export class RuleTaskDraft {
   async commit(options?: {
     order: SchedulingRuleId[];
     allowed: (id: SchedulingRuleId) => boolean;
+    /** Preserve all existing tasks when only independent creations are safe. */
+    createOnly?: boolean;
     beforeUpdate?: (task: TickTickTask) => Promise<void>;
     afterRule: (id: SchedulingRuleId) => Promise<void>;
     failed: (ids: SchedulingRuleId[], error: unknown) => void;
   }) {
-    const changed = this.values().filter(task => !this.created.has(task.id) && fields.some(k => fieldChanged(k, task[k], this.original.get(task.id)?.[k])));
+    const changed = options?.createOnly ? [] : this.values().filter(task => !this.created.has(task.id) && fields.some(k => fieldChanged(k, task[k], this.original.get(task.id)?.[k])));
+    const removed = options?.createOnly ? [] : [...this.removed];
     const allowed = (id: SchedulingRuleId | undefined) => !id || !options || options.allowed(id);
     const ownerIds = (id: string) => [...new Set([...this.owners.get(id)?.values() ?? [], ...this.requiredRules.get(id) ?? []])];
     const validState = (fresh: TickTickTask, original: TickTickTask) => pending(fresh) && pending(original) && !hasNewTaskCompletion(fresh, original)
@@ -305,7 +308,7 @@ export class RuleTaskDraft {
       return result;
     };
     const validated = new Set<string>();
-    for (const task of [...changed, ...[...this.removed.keys()].map(id => this.original.get(id)!)]) {
+    for (const task of [...changed, ...removed.map(([id]) => this.original.get(id)!)]) {
       try {
         const fresh = await this.source.getTask(task.projectId, task.id), original = this.original.get(task.id)!;
         verify(fresh, original, original, 'before');
@@ -323,7 +326,7 @@ export class RuleTaskDraft {
     };
     // TickTick may cascade parent deletion. Verify/delete children first so a
     // cascade cannot make an untouched child's later verification fail.
-    const removals = [...this.removed].sort(([a], [b]) => removalDepth(b) - removalDepth(a));
+    const removals = removed.sort(([a], [b]) => removalDepth(b) - removalDepth(a));
     const remaining = new Set(this.created), writes = new Set(changed.map(t => t.id));
     const stages = options?.order ?? [undefined];
     for (let index = 0; index < stages.length; index++) {
