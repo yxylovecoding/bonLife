@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { decryptOutlookConnection, encryptOutlookConnection, parseOutlookCalendar, parseOutlookInput, readOutlookSnapshot, validateOutlookUrl } from './_outlookCalendar';
+import { calendarReadFailure, decryptOutlookConnection, encryptOutlookConnection, parseOutlookCalendar, parseOutlookInput, readOutlookSnapshot, validateOutlookUrl } from './_outlookCalendar';
 import { DEFAULT_OUTLOOK_RULES } from '../src/utils/outlookCalendar';
 import { planTickTickDay, type DailyPlanState } from './_ticktickDailyPlan';
 
@@ -12,6 +12,18 @@ const input = { playUrl, classUrl, policy: 'manual' as const, rules: DEFAULT_OUT
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Outlook ICS 解析', () => {
+  it('诊断区分 HTTP、超时和解析失败，日志不包含订阅地址或响应正文', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(`private ${playUrl}`, { status: 429 })));
+      await expect(readOutlookSnapshot({ ...input, classUrl: '' }, '2026-10-01', '2026-11-01')).rejects.toThrow('日历读取失败');
+      expect(warn).toHaveBeenCalledWith('[outlook-calendar-read-failure]', JSON.stringify({ reason: 'http', http: 429 }));
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('private');
+      expect(calendarReadFailure(new DOMException('secret URL', 'TimeoutError'))).toEqual({ reason: 'timeout' });
+      expect(calendarReadFailure(new Error('日程时段无效'))).toEqual({ reason: 'invalid-duration' });
+      expect(calendarReadFailure(new Error(playUrl))).toEqual({ reason: 'parse' });
+    } finally { warn.mockRestore(); }
+  });
   it('共享解析仍分别展开窗口和改期例外，下次读取立即采用新内容', async () => {
     const makeCalendar = (title: string) => calendar([
       event('UID:trip\nDTSTART;VALUE=DATE:20261004\nDTEND;VALUE=DATE:20261005\nRRULE:FREQ=DAILY;COUNT=3\nSUMMARY:出游'),

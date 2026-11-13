@@ -1,6 +1,6 @@
 import ICAL from 'ical.js';
 import { kv } from './_accountKv.js';
-import { fetchCalendar, parseOutlookCalendar, decryptOutlookConnection } from './_outlookCalendar.js';
+import { fetchCalendar, parseOutlookCalendar, decryptOutlookConnection, calendarReadFailure } from './_outlookCalendar.js';
 import { periodDays, reconcilePeriodEvents, type PeriodEvent } from '../src/utils/bonLife.js';
 import { isPeriodCalendarTitle } from '../src/utils/outlookCalendar.js';
 
@@ -44,7 +44,8 @@ async function readPeriodCalendarText(connection: LifeConnection) {
   try {
     const input = decryptOutlookConnection(connection.encrypted, (process.env.SYNC_SECRET || '').trim());
     return await fetchCalendar(input.playUrl);
-  } catch {
+  } catch (error) {
+    console.warn('[outlook-period-read-failure]', JSON.stringify(calendarReadFailure(error)));
     await kv.set('bonlife:period-read-status:v1', { connectionId: connection.id, error: '经期订阅同步失败，请检查连接' });
     throw new Error('Outlook 日历读取失败，请检查订阅链接与共享范围');
   }

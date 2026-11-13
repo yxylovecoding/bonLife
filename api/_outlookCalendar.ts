@@ -100,11 +100,32 @@ export function decryptOutlookConnection(value: string, secret: string): Outlook
   return parseOutlookInput(JSON.parse(Buffer.from(new Uint8Array([...decipher.update(data), ...decipher.final()])).toString('utf8')));
 }
 
+class CalendarReadError extends Error {
+  constructor(readonly reason: string, readonly http?: number) { super('订阅链接暂不可用'); }
+}
+
+// Fixed categories only: upstream errors and subscription URLs contain secrets.
+export function calendarReadFailure(error: unknown) {
+  if (error instanceof CalendarReadError) return { reason: error.reason, ...(error.http ? { http: error.http } : {}) };
+  if (error instanceof Error) {
+    if (['AbortError', 'TimeoutError'].includes(error.name)) return { reason: 'timeout' };
+    if (error instanceof TypeError) return { reason: 'network' };
+    const reasons: Record<string, string> = {
+      '日历内容过大': 'size-limit', '订阅内容不是完整日历': 'invalid-calendar',
+      '日历日程过多': 'event-limit', '日历含暂不支持的后续日程变更': 'future-exception',
+      '日程时段无效': 'invalid-duration', '日程日期缺失': 'missing-date', '日程时区缺失': 'missing-timezone',
+      '全天日程的重复频率无效': 'recurrence-frequency', '日历重复日程过多，请缩小订阅范围': 'recurrence-limit',
+    };
+    if (reasons[error.message]) return { reason: reasons[error.message] };
+  }
+  return { reason: 'parse' };
+}
+
 export async function fetchCalendar(url: string): Promise<string> {
   const response = await fetch(validateOutlookUrl(url), {
     redirect: 'error', signal: AbortSignal.timeout(15_000), headers: { Accept: 'text/calendar' },
   });
-  if (!response.ok || !response.body) throw new Error('订阅链接暂不可用');
+  if (!response.ok || !response.body) throw new CalendarReadError('http', response.status);
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let length = 0;
@@ -250,7 +271,8 @@ export async function readOutlookSnapshot(input: OutlookConnectionInput, startDa
       return { name, days: expandOutlookCalendar(parsed, kind, startDate, endDate, true, false, { timezone }), timed: availabilityRange
         ? expandOutlookCalendar(parsed, kind, availabilityRange.startDate, availabilityRange.endDate, false, true,
           { timezone, includeFree: true, includeTaskLink: true }).filter((event) => !event.allDay) : [] };
-    } catch {
+    } catch (error) {
+      console.warn('[outlook-calendar-read-failure]', JSON.stringify(calendarReadFailure(error)));
       // Never forward upstream errors: they can contain the private subscription URL.
       throw new Error(`「${name}」日历读取失败，请检查订阅链接与共享范围`);
     }
