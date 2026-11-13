@@ -142,6 +142,11 @@ server.headersTimeout = 15_000;
 server.listen(Number(process.env.PORT || 8000), '0.0.0.0', () => {
   const address = server.address();
   console.log(`BonBills HTTP server ready:${typeof address === 'object' && address ? address.port : ''}`);
+  if (process.env.BON_RAIN_REPLAY?.trim()) {
+    void import('../api/_rainReminderReplay.js').then(({ runRainReminderReplay }) =>
+      runRainReminderReplay(process.env.BON_RAIN_REPLAY, value => console.info('[rain-reminder-replay]', JSON.stringify(value))))
+      .catch(() => console.error('[rain-reminder-replay]', JSON.stringify({ phase: 'failed', reason: '补跑未确认，不自动重试' })));
+  }
 });
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => server.close(() => process.exit(0)));

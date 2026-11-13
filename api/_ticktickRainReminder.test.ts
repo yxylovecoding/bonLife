@@ -19,6 +19,14 @@ beforeEach(() => { vi.resetAllMocks(); m.store.clear();
   m.locations.mockResolvedValue({ [day]: { locations: [city], travel: false } }); m.weather.mockResolvedValue(forecast()); });
 
 describe('boncal 晨间雨天关窗', () => {
+  it('只有明确指定今天的手动补跑能越过晨间时段，日期及成功标记不变', async () => {
+    const o = options(); o.now = new Date(`${day}T15:00:00+08:00`); const createTask = vi.fn();
+    await expect(planRainReminder({ createTask } as unknown as TickTickApi, { ...o, manualDate: '2026-11-11' })).rejects.toThrow('补跑日期');
+    expect(createTask).not.toHaveBeenCalled();
+    await planRainReminder({ createTask } as unknown as TickTickApi, { ...o, manualDate: day });
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ startDate: `${day}T08:00:00+0800`, reminders: ['TRIGGER:PT0S'] }));
+    expect(m.store.has(key)).toBe(false);
+  });
   it.each(['00:01', '04:59', '05:00', '12:00', '20:00'])('%s 不查天气或消耗当天机会', async time => {
     const o = options(); o.now = new Date(`${day}T${time}:00+08:00`);
     expect(await planRainReminder({} as TickTickApi, o)).toEqual({ reason: '不在晨间检查时段（05:01–11:59）' });

@@ -81,10 +81,10 @@ export function cycleEnd(task: TickTickTask, lastDay: string): string | null {
   return null;
 }
 
-export async function refreshDailyHistory(api: TickTickApi, tasks: TickTickTask[], state: DailyPlanState, now = new Date()) {
+export async function refreshDailyHistory(api: TickTickApi, tasks: TickTickTask[], state: DailyPlanState, now = new Date(), extraProjectIds: string[] = []) {
   const through = state.historyThrough ? Date.parse(state.historyThrough) : NaN;
   const start = Number.isFinite(through) ? Math.max(now.getTime() - 60 * DAY, through - DAY) : now.getTime() - 60 * DAY;
-  const projectIds = [...new Set(tasks.map((task) => task.projectId))];
+  const projectIds = [...new Set([...tasks.map((task) => task.projectId), ...extraProjectIds])];
   const deadline = Date.now() + 55_000;
   const count = now.getTime() - start > 14 * DAY ? 4 : 1;
   const windows = Array.from({ length: count }, (_, i) => ({
