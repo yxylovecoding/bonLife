@@ -26,6 +26,16 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ connected: false });
     }
     if (req.method === 'GET') {
+      if (req.query?.action === 'diagnostics') {
+        if (!await authOk(req, { ownerOnly: true })) return res.status(403).json({ error: 'forbidden' });
+        const connection = await kv.get<Connection>(CONNECTION_KEY);
+        if (!connection) return res.status(200).json({ connected: false });
+        const input = decryptOutlookConnection(connection.encrypted, secret);
+        const index = Number(req.query.source ?? 0);
+        if (!Number.isInteger(index) || index < 0 || !input.sources[index]) return res.status(400).json({ error: '无效日历' });
+        const { diagnoseOutlookSource } = await import('./_outlookDiagnostics.js');
+        return res.status(200).json({ source: index, ...await diagnoseOutlookSource(input.sources[index].url) });
+      }
       const connection = await kv.get<Connection>(CONNECTION_KEY);
       if (!connection) return privateJson(req, res, { connected: false });
       const input = decryptOutlookConnection(connection.encrypted, secret);

@@ -19,14 +19,14 @@ const key = 'outlook:calendar-connection:v1';
 const range = { startDate: '2026-09-01', endDate: '2026-10-01' };
 const input = { ...range, playUrl: 'https://outlook.live.com/owa/calendar/private/published/calendar.ics', classUrl: '', policy: 'manual', rules: DEFAULT_OUTLOOK_RULES };
 const ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:trip\r\nDTSTART;VALUE=DATE:20260922\r\nDTEND;VALUE=DATE:20260924\r\nSUMMARY:出游\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n';
-async function call(method: string, body?: unknown) {
+async function call(method: string, body?: unknown, query = {}) {
   const result = { status: 200, body: {} as Record<string, unknown>, headers: {} as Record<string, string> };
   const res = {
     setHeader: (name: string, value: string) => { result.headers[name] = value; },
     status: (status: number) => { result.status = status; return res; },
     json: (value: Record<string, unknown>) => { result.body = value; return res; },
   };
-  await handler({ method, body, headers: {}, query: {} } as VercelRequest, res as unknown as VercelResponse);
+  await handler({ method, body, headers: {}, query } as VercelRequest, res as unknown as VercelResponse);
   return result;
 }
 beforeEach(() => {
@@ -37,6 +37,11 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe('Outlook 连接接口', () => {
+  it('诊断只允许所有者，拒绝时不读取连接或请求上游', async () => {
+    authenticated.mockImplementation(async (_req, options) => !options?.ownerOnly);
+    expect((await call('GET', undefined, { action: 'diagnostics' })).status).toBe(403);
+    expect(fetch).not.toHaveBeenCalled(); expect(data.size).toBe(0);
+  });
   it.each(['GET', 'POST', 'PUT', 'DELETE'])('未授权 %s 不读取或修改连接', async (method) => {
     authenticated.mockResolvedValue(false);
     expect((await call(method, input)).status).toBe(401);
