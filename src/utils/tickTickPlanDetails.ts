@@ -1,4 +1,10 @@
 import type { SchedulingRun } from './schedulingRules';
+
+const planDay = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' });
+export function currentTickTickPlan(plan: TickTickPlanDetails | null | undefined, now = new Date()): TickTickPlanDetails | null {
+  return plan?.date === planDay.format(now) ? plan : null;
+}
+
 export interface TickTickPlanTask {
   id: string;
   projectId: string;

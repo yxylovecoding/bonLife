@@ -19,8 +19,8 @@ vi.mock('./_cloudScheduler.js', () => ({ dispatchFullReplan: m.dispatch }));
 vi.mock('./_outlookConnections.js', () => ({ readOutlookConnections: async () => [{ id: 'read', name: '玩', connected: true, kind: 'subscription' }] }));
 vi.mock('./_lifeDone.js', () => ({ syncRecentLifeDone: m.archive }));
 async function request(method: string, action = '', body?: unknown, cron = false) {
-  const result = { status: 200, body: {} as any };
-  const res = { setHeader: vi.fn(), status: (code: number) => { result.status = code; return res; }, json: (value: unknown) => { result.body = value; return res; } };
+  const result = { status: 200, body: {} as any, headers: new Map<string, unknown>() };
+  const res = { setHeader: (key: string, value: unknown) => result.headers.set(key, value), status: (code: number) => { result.status = code; return res; }, json: (value: unknown) => { result.body = value; return res; } };
   await handler({ method, query: { action }, headers: { ...(cron ? { authorization: 'Bearer cron-secret' } : {}) }, body } as VercelRequest, res as unknown as VercelResponse);
   return result;
 }
@@ -67,7 +67,9 @@ describe('规则配置接口', () => {
 describe('同步入口与保护', () => {
   it('排期详情只读，包含本轮规则状态', async () => {
     m.details.mockResolvedValue({ rules: { version: 3, results: [] } });
-    expect((await request('GET', 'plan-details')).body.details.rules.version).toBe(3);
+    const result = await request('GET', 'plan-details');
+    expect(result.body.details.rules.version).toBe(3);
+    expect(result.headers.get('Cache-Control')).toBe('no-store');
     expect((await request('POST', 'plan-details')).status).toBe(405); expect(m.engine).not.toHaveBeenCalled();
   });
   it('小时与完整同步入口保持分离', async () => {

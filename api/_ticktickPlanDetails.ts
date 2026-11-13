@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { currentTickTickPlan } from '../src/utils/tickTickPlanDetails.js';
 import { kv } from './_accountKv.js';
 import { DAILY_PLAN_KEY, type DailyPlanState } from './_ticktickDailyPlan.js';
 import { decryptTickTickToken, TICKTICK_CONNECTION_KEY, type TickTickConnection } from './_ticktickTrips.js';
@@ -10,5 +11,5 @@ export async function readTickTickPlanDetails() {
   ]);
   if (!connection || !saved?.briefing) return null;
   const token = decryptTickTickToken(connection.encryptedToken, (process.env.SYNC_SECRET || '').trim());
-  return saved.connectionId === createHash('sha256').update(token).digest('hex') ? saved.briefing : null;
+  return saved.connectionId === createHash('sha256').update(token).digest('hex') ? currentTickTickPlan(saved.briefing) : null;
 }
