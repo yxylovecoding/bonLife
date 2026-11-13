@@ -11,6 +11,7 @@ const child = spawn(deno || process.execPath, deno
     PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR,
     PORT: '0', NODE_ENV: 'production', RENDER: 'true',
     SYNC_SECRET: 'isolated-migration-smoke-test',
+    CLOUD_SCHEDULER_RUN_SECRET: 'isolated-scheduler-smoke-test',
   }, stdio: ['ignore', 'pipe', 'pipe'],
 });
 let output = '';
@@ -72,6 +73,12 @@ try {
   for (const path of ['/api/sync', '/api/sync-monthly-backup', '/api/ticktick-trips',
     '/api/latest-bill-attachment', '/api/boncv-profile', '/api/outlook-calendar',
     '/api/bonlife', '/api/bonclothes', '/api/notion-readinglist']) await check(path, 401);
+  for (const action of ['routine-visibility', 'reading-visibility', 'hair-wash']) {
+    const result = await (await check(`/api/ticktick-trips?scheduler=1&action=${action}`, 200,
+      { headers: { Authorization: 'Bearer isolated-scheduler-smoke-test' } })).json();
+    assert.deepEqual(result, result.skipped === 'rest-window' ? { ok: true, skipped: 'rest-window' }
+      : { ok: true, rulesComplete: true, skipped: 'included-in-full' });
+  }
   // Rewrites may not be overridden by caller-supplied app selectors.
   await check('/api/bonlife?app=write', 401);
   await check('/api/market-search', 400);

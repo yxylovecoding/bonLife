@@ -225,6 +225,13 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     }
     if (req.query?.action === 'daily-email') return res.status(410).json({ error: '每日邮件已取消' });
     if (isCron && automaticRestWindow()) return res.status(200).json({ ok: true, skipped: 'rest-window' });
+    // These scheduled actions only occur before full/hourly-replan in the
+    // existing queue. That following action already evaluates every visibility
+    // rule with fresh sources. Avoid a redundant prelude stopping independent
+    // planning on older Workers that do not yet understand partial results.
+    // Explicit user POSTs and standalone night/midnight maintenance still run.
+    if (isCron && ['routine-visibility', 'reading-visibility', 'hair-wash'].includes(String(req.query?.action)))
+      return res.status(200).json({ ok: true, rulesComplete: true, skipped: 'included-in-full' });
     if (req.query?.action === 'plan-details') {
       if (req.method !== 'GET') return res.status(405).json({ error: 'method not allowed' });
       const { readTickTickPlanDetails } = await import('./_ticktickPlanDetails.js');

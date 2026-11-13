@@ -68,8 +68,8 @@ export function classify(action, status, body, attempt) {
   // The backend committed/verified independent work. Do not replay it or stop
   // later independent steps merely because a source-dependent rule was held.
   if ([200, 502].includes(status) && body?.rulesComplete === false && body?.partial === true
-      && !body.busy && Array.isArray(body.rules?.results)
-      && body.rules.results.some(rule => rule.status === 'success')) return { outcome: 'partial', reason: 'rules-incomplete', http: status };
+      && !body.busy && Number.isInteger(body.completedRules) && body.completedRules > 0)
+    return { outcome: 'partial', reason: 'rules-incomplete', http: status };
   if (status !== 200 || body?.ok !== true || body.busy || body.error) return fail('incomplete');
   if (typeof body.rulesComplete === 'boolean') return body.rulesComplete ? { outcome: 'success' } : fail('rules-incomplete');
   if (action === 'full') {

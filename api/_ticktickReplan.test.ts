@@ -113,6 +113,7 @@ describe('日历故障隔离与恢复', () => {
       task('reading', { title: '阅读', tags: ['hidden', 'routine'] })];
     const result = await runRuleReplan({ scope: 'full' });
     expect(result.partial).toBe(true); expect(status(result, 'always-today').deferred).toBe(1);
+    expect(m.data.get('outlook:calendar-read-status:v1')).toMatchObject({ connectionId: 'outlook', error: '日历保存未确认，保留原安排' });
     expect(m.tasks[0].dueDate).toContain(day); expect(m.tasks[1].dueDate).toContain('2026-11-04');
     expect(m.tasks[2].tags).toEqual(['routine']);
   });
@@ -120,7 +121,7 @@ describe('日历故障隔离与恢复', () => {
     if (kind === 'yesterday') vi.setSystemTime(new Date(`${day}T00:05:00+08:00`));
     m.data.set('outlook:calendar-connection:v1', { id: 'outlook', encrypted: 'fixture' });
     m.data.set('outlook:calendar-read-status:v1', { connectionId: kind === 'different-connection' ? 'old' : 'outlook',
-      syncedAt: new Date(Date.now() + (kind === 'future' ? 60_000 : kind === 'expired' ? -16 * 60_000 : kind === 'yesterday' ? -10 * 60_000 : -60_000)).toISOString(),
+      syncedAt: new Date(Date.now() + (kind === 'future' ? 60_000 : kind === 'expired' ? -7 * 60 * 60_000 : kind === 'yesterday' ? -10 * 60_000 : -60_000)).toISOString(),
       ...(kind === 'failed' ? { error: 'unavailable' } : {}) });
     m.tasks = [task('located', { title: '阅读', tags: ['居', 'hidden', 'routine'] }), task('reading', { title: '阅读', tags: ['hidden', 'routine'] })];
     const result = await runRuleReplan({ scope: 'visibility' });

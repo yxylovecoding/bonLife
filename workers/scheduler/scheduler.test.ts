@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { CRONS, manualJob, scheduledJobs } from './schedule.js';
 import { classify, callAction } from './result.js';
 import { SchedulerQueue } from './queue.js';
+import { schedulerResponse } from '../../api/_schedulerResponse';
 import worker from './index.js';
 const attempt = { retries: 0, busy: 0, batches: 0 };
 const good = () => Response.json({ ok: true, dailyPlan: {} });
@@ -191,9 +192,9 @@ describe('durable serial execution', () => {
     const partial = { ok: true, partial: true, rulesComplete: false, error: 'some rules held',
       rules: { results: [{ id: 'visibility-reading', status: 'success' }, { id: 'visibility-location', status: 'skipped' }] } };
     const f = fixture();
-    const fetcher = vi.fn().mockResolvedValueOnce(Response.json(partial))
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json(schedulerResponse(partial)))
       .mockResolvedValueOnce(Response.json({ ok: true, connected: false }))
-      .mockResolvedValueOnce(Response.json(partial, { status: 502 }));
+      .mockResolvedValueOnce(Response.json(schedulerResponse(partial), { status: 502 }));
     vi.stubGlobal('fetch', fetcher);
     await f.enqueue([manualJob('full', 'partial', Date.now())]);
     await f.tick(); await f.tick(); await f.tick(); await f.tick();
@@ -201,6 +202,19 @@ describe('durable serial execution', () => {
       results: [{ action: 'routine-visibility', outcome: 'partial' }, { action: 'life-periods', outcome: 'success' }, { action: 'full', outcome: 'partial' }] });
     expect(fetcher).toHaveBeenCalledTimes(3);
     expect(classify('full', 200, { ...partial, rules: { results: [] } }, attempt).outcome).toBe('failed');
+  });
+  it('重复的定时显隐由后续完整步骤执行，队列不会提前停止或重复写', async () => {
+    const f = fixture();
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json(schedulerResponse({ ok: true, rulesComplete: true, skipped: 'included-in-full' })))
+      .mockResolvedValueOnce(Response.json({ ok: true, connected: false }))
+      .mockResolvedValueOnce(Response.json({ ok: true, rulesComplete: true }));
+    vi.stubGlobal('fetch', fetcher);
+    await f.enqueue([manualJob('full', 'consolidated', Date.now())]);
+    await f.tick(); await f.tick(); await f.tick();
+    expect((await f.state()).jobs[0].status).toBe('success'); expect(fetcher).toHaveBeenCalledTimes(3);
+    const safe = schedulerResponse({ ok: true, partial: true, rulesComplete: false, error: 'PRIVATE',
+      rules: { results: [{ id: 'PRIVATE', status: 'success', reason: 'PRIVATE' }] } });
+    expect(safe).toEqual({ ok: true, partial: true, rulesComplete: false, error: true, completedRules: 1 });
   });
   it('persists readiness retries across alarms without replaying the business action', async () => {
     const f = fixture(); f.env.ORIGIN = 'https://bonbills.onrender.com';

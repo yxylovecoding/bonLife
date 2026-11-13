@@ -41,6 +41,9 @@ import { TickTickOpenApiClient, decryptTickTickToken, readAllTickTickTasks, read
 
 import { isPendingTickTickTask as pending } from './_ticktickTaskState.js';
 const plusDay = (date: string) => new Date(Date.parse(`${date}T12:00:00Z`) + 86400000).toISOString().slice(0, 10);
+// Covers the existing 20:00 full sync -> 22:00/00:00 maintenance cadence.
+// A subsequent read failure invalidates this allowance immediately.
+const VISIBILITY_SOURCE_MAX_AGE = 6 * 60 * 60_000;
 
 interface RuleReplanResult {
   busy: boolean; connected?: boolean; skipped?: string; updated?: number; rules?: SchedulingRun; rulesComplete?: boolean; partial?: boolean; error?: string;
@@ -124,7 +127,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           kv.get<{ connectionId?: string; error?: string; syncedAt?: string }>(OUTLOOK_READ_STATUS_KEY)]);
         const age = status?.syncedAt ? now.getTime() - Date.parse(status.syncedAt) : NaN;
         calendarError = Boolean(connected && (status?.connectionId !== connected.id || status.error
-          || !Number.isFinite(age) || age < 0 || age > 15 * 60_000
+          || !Number.isFinite(age) || age < 0 || age > VISIBILITY_SOURCE_MAX_AGE
           || calendarDateInTimeZone(status.syncedAt, 'Asia/Shanghai') !== today));
         if (status?.syncedAt) calendarCheckedAt = status.syncedAt;
       }
@@ -157,7 +160,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         ]);
         const age = periods ? now.getTime() - Date.parse(periods.syncedAt) : NaN;
         periodError = Boolean(periodConnection && (periods?.connectionId !== periodConnection.id || periodStatus?.error
-          || !Number.isFinite(age) || age < 0 || age > 15 * 60_000));
+          || !Number.isFinite(age) || age < 0 || age > VISIBILITY_SOURCE_MAX_AGE));
       }
       let template: TickTickTemplate | undefined;
       try { if (options.scope !== 'visibility' || ['night', 'all'].includes(options.visibilityKind ?? '')) template = await readConnectedTickTickTemplate(api, connection); } catch { /* Only template-dependent rules need this input. */ }
@@ -638,6 +641,8 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           await saveOutlookSnapshot(outlookSnapshot.connection, outlookSnapshot.snapshot, outlookSnapshot.policy, outlookSnapshot.requestedAt);
         } catch {
           run.calendar.state = 'unavailable';
+          await kv.set(OUTLOOK_READ_STATUS_KEY, { connectionId: outlookSnapshot.connection.id,
+            error: '日历保存未确认，保留原安排' });
           for (const [id, taskIds] of locationUses) {
             draft.preserveFields(taskIds, visibilityRules.includes(id) ? 'hidden' : 'date');
             const result = run.results.find(r => r.id === id)!;
