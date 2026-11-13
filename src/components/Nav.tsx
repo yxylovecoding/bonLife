@@ -13,7 +13,7 @@ const tabs = [
   },
   {
     to: '/calendar',
-    label: 'boncal',
+    label: '记录',
     icon: (active: boolean) => (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={active ? '#1a73e8' : '#5f6368'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <rect x="3" y="4" width="18" height="18" rx="2" fill={active ? '#e8f0fe' : 'none'} stroke={active ? '#1a73e8' : '#5f6368'} />
