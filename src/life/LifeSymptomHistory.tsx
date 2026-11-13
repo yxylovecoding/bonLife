@@ -3,7 +3,7 @@ import { SYMPTOM_AREAS, SYMPTOM_STATES, type SymptomHistory, type SymptomKind } 
 import { symptomColor } from './symptomColor';
 
 export default function LifeSymptomHistory({ kind, history, onEdit }: {
-  kind: SymptomKind; history: SymptomHistory[]; onEdit: (date: string) => void;
+  kind: SymptomKind | 'well'; history: SymptomHistory[]; onEdit: (date: string, kind: SymptomKind) => void;
 }) {
   const [selected, setSelected] = useState('');
   const [limit, setLimit] = useState(12);
@@ -13,12 +13,12 @@ export default function LifeSymptomHistory({ kind, history, onEdit }: {
     <summary>症状跟踪 <span>{history.length ? `${history.length} 项` : '暂无记录'}</span></summary>
     {active && latest ? <>
       <label className="life-field">症状<select className="life-symptom-mark" style={symptomColor(active.key)} value={active.key} onChange={(event) => { setSelected(event.target.value); setLimit(12); }}>
-        {history.map((item) => <option key={item.key} value={item.key}>{kind === 'discomfort' ? `${SYMPTOM_AREAS[item.area]} · ` : ''}{item.name}</option>)}
+        {history.map((item) => <option key={item.key} value={item.key}>{kind !== 'eyes' ? `${SYMPTOM_AREAS[item.area]} · ` : ''}{item.name}</option>)}
       </select></label>
       <div className="life-symptom-stats"><span>最近 · {SYMPTOM_STATES[latest.status]}</span><span>记录 {active.points.length} 次</span>
         <span>首次 {active.points[active.points.length - 1].date.replace(/-/g, '.')}</span></div>
       <ol className="life-symptom-timeline">{active.points.slice(0, limit).map((point) => <li key={point.date}>
-        <button type="button" onClick={() => onEdit(point.date)} aria-label={`编辑 ${point.date} ${active.name}`}>
+        <button type="button" onClick={() => onEdit(point.date, active.area === 'eye' ? 'eyes' : 'discomfort')} aria-label={`编辑 ${point.date} ${active.name}`}>
           <time dateTime={point.date}>{point.date.replace(/-/g, '.')}</time><span className="life-symptom-status life-symptom-mark" style={symptomColor(active.key)}>{SYMPTOM_STATES[point.status]}</span>
           {point.note && <span className="life-symptom-note">{point.note}</span>}<span aria-hidden="true">›</span>
         </button></li>)}</ol>

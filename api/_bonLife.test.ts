@@ -3,6 +3,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import handler from './outlook-calendar';
 import { entriesKey, LIFE_CONNECTION_KEY, LIFE_SETTINGS_KEY, LIFE_TRAINING_ENTRIES_KEY, LIFE_SYMPTOM_ENTRIES_KEY, parsePeriodCalendar, periodsKey, readPeriodDays, syncLifePeriods } from './_bonLife';
 import { DEFAULT_CYCLE } from '../src/utils/bonLife';
+import { wellDay } from '../src/utils/lifeWell';
+import { SAVE_WELL } from './_lifeWell';
 import { DEFAULT_SKIN_SETTINGS, type SkinSettings } from '../src/utils/lifeSkin';
 import { estimateCycle } from '../src/utils/lifeCycle';
 import { encryptOutlookConnection } from './_outlookCalendar';
@@ -42,6 +44,35 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(calendar([event('period', '月经')]))));
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+
+describe('bonWell 接口', () => {
+  it('批量保存返回四类最新内容，所有键通过同一事务写入', async () => {
+    const current = wellDay({}, '2026-11-13');
+    current.entries.mood = { text: '开心', revision: 'well-api-12345678' };
+    evalMock.mockResolvedValue([1, JSON.stringify(current)]);
+    const result = await call('POST', { action: 'save-well', date: '2026-11-13', mutationId: 'well-api-12345678', entries: { mood: { text: '开心', revision: '' } } });
+    expect(result.status).toBe(200); expect(result.body).toEqual(current);
+    expect(evalMock).toHaveBeenCalledOnce();
+    expect(evalMock.mock.calls[0][0]).toBe(SAVE_WELL);
+    expect(evalMock.mock.calls[0][1]).toEqual([entriesKey(2026), LIFE_SYMPTOM_ENTRIES_KEY, 'bonlife:well-mutation:v1:well-api-12345678']);
+  });
+  it('版本冲突返回整体云端记录，非法分类不调用存储', async () => {
+    const current = wellDay({}, '2026-11-13');
+    evalMock.mockResolvedValue([0, current]);
+    const body = { action: 'save-well', date: '2026-11-13', mutationId: 'well-api-12345678', entries: { mood: { text: '开心', revision: '' } } };
+    const conflict = await call('POST', body);
+    expect(conflict.status).toBe(409); expect(conflict.body.currentWell).toEqual(current);
+    evalMock.mockClear();
+    expect((await call('POST', { ...body, entries: { training: { text: '', revision: '' } } })).status).toBe(400);
+    expect(evalMock).not.toHaveBeenCalled();
+  });
+  it('未授权或跨站请求拒绝批量保存', async () => {
+    const body = { action: 'save-well', date: '2026-11-13', mutationId: 'well-api-12345678', entries: { mood: { text: '开心', revision: '' } } };
+    auth.mockResolvedValue(false); expect((await call('POST', body)).status).toBe(401);
+    origin.mockReturnValue(false); expect((await call('POST', body)).status).toBe(403);
+    expect(evalMock).not.toHaveBeenCalled();
+  });
+});
 
 describe('经期 Outlook 解析', () => {
   it('上游故障保留经期历史，提示临时故障并保留原错误分类', async () => {

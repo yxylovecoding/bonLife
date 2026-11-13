@@ -10,6 +10,10 @@ import { CYCLE_GUIDANCE, cycleDay, cyclePhaseRanges, estimateCycle, visibleCycle
 import { requestSession } from '../utils/authClient';
 import { LifeError, lifeRequest, readDraft, type LifeDraft } from './client';
 import LifeEditor from './LifeEditor';
+import LifeWellCalendar from './LifeWellCalendar';
+import LifeWellEditor from './LifeWellEditor';
+import { readWellDraft } from './wellDraft';
+import { isWellKind, wellDay, wellView, WELL_KINDS, type WellKind } from '../utils/lifeWell';
 import LifeConnection from './LifeConnection';
 import LifeCycleSettings from './LifeCycleSettings';
 import LifePlanDetails from './LifePlanDetails';
@@ -28,22 +32,25 @@ const LifeDoneList = lazy(() => import('./LifeDoneList'));
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date());
-function initialDate(draft: LifeDraft | null) {
+function initialDate(draft: LifeDraft | null, wellDate?: string) {
   const query = new URLSearchParams(window.location.search);
-  const date = draft?.date || today();
+  const date = wellDate || draft?.date || today();
   const requestedYear = Number(query.get('year'));
   const requestedMonth = Number(query.get('month'));
   return {
-    year: !draft && Number.isInteger(requestedYear) && requestedYear >= 1900 && requestedYear <= 2200 ? requestedYear : Number(date.slice(0, 4)),
-    month: !draft && requestedMonth >= 1 && requestedMonth <= 12 && Number.isInteger(requestedMonth) ? requestedMonth : Number(date.slice(5, 7)),
-    kind: (draft?.kind || (Object.keys(LIFE_LABELS).includes(query.get('kind') || '') ? query.get('kind') : 'skin')) as LifeView,
+    year: !draft && !wellDate && Number.isInteger(requestedYear) && requestedYear >= 1900 && requestedYear <= 2200 ? requestedYear : Number(date.slice(0, 4)),
+    month: !draft && !wellDate && requestedMonth >= 1 && requestedMonth <= 12 && Number.isInteger(requestedMonth) ? requestedMonth : Number(date.slice(5, 7)),
+    kind: wellDate ? 'well' as const : wellView((draft?.kind || (Object.keys(LIFE_LABELS).includes(query.get('kind') || '') ? query.get('kind') : 'well')) as LifeView),
   };
 }
 
 export default function LifeCalendar({ owner, onExpired }: { owner: string; onExpired: () => void }) {
   const orche = useOrchestrate(onExpired);
-  const [draft, setDraft] = useState<LifeDraft | null>(() => readDraft(owner));
-  const [selection, setSelection] = useState(() => initialDate(draft));
+  const [restored] = useState(() => ({ legacy: readDraft(owner), well: readWellDraft(owner) }));
+  const [draft, setDraft] = useState<LifeDraft | null>(() => restored.legacy && !isWellKind(restored.legacy.kind) && !restored.well ? restored.legacy : null);
+  const [wellEditing, setWellEditing] = useState<{ date: string; section?: WellKind } | null>(() => restored.well ? { date: restored.well.date }
+    : restored.legacy && isWellKind(restored.legacy.kind) ? { date: restored.legacy.date, section: restored.legacy.kind } : null);
+  const [selection, setSelection] = useState(() => initialDate(restored.legacy, restored.well?.date));
   const { year, month, kind } = selection;
   const [data, setData] = useState<LifeYear | null>(null);
   const [loading, setLoading] = useState(true);
@@ -65,7 +72,8 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
   const current = data?.year === year ? data : null;
   const skinEntries = useMemo(() => ({ ...current?.skinHistory, ...current?.entries }), [current]);
   const symptomEntries = useMemo(() => ({ ...current?.symptomHistory, ...current?.entries }), [current]);
-  const symptoms = useMemo(() => kind === 'eyes' || kind === 'discomfort' ? symptomHistory(kind, symptomEntries) : [], [kind, symptomEntries]);
+  const symptoms = useMemo(() => kind === 'well' ? [...symptomHistory('eyes', symptomEntries), ...symptomHistory('discomfort', symptomEntries)]
+    : kind === 'eyes' || kind === 'discomfort' ? symptomHistory(kind, symptomEntries) : [], [kind, symptomEntries]);
   const skinSettings = current?.skinSettings ?? DEFAULT_SKIN_SETTINGS;
   const periodSet = new Set(current?.periodDays ?? []);
   const cycle = current?.cycle ?? DEFAULT_CYCLE;
@@ -85,7 +93,7 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
     for (const date of cells) {
       if (!date) continue;
       const entry = current?.entries[`${kind}:${date}`];
-      const items = kind === 'done' ? [] : lifeCalendarStripItems(kind, entry, trainingPlan.get(date), trainingNames);
+      const items = kind === 'done' || kind === 'well' ? [] : lifeCalendarStripItems(kind, entry, trainingPlan.get(date), trainingNames);
       if (items.length) result.set(date, items);
     }
     return result;
@@ -192,7 +200,7 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
           : orche.planDetails ? <LifePlanDetails plan={orche.planDetails} /> : !orche.progress && <p className="life-empty-state">今日暂无排期记录</p>}
     </section>}
     <div className="life-toolbar">
-      <nav className="life-tabs" aria-label="状态日历">{(['skin', 'eyes', 'discomfort', 'mood', 'training', 'done'] as const).map((value) => <button key={value}
+      <nav className="life-tabs" aria-label="状态日历">{(['well', 'training', 'done'] as const).map((value) => <button key={value}
         aria-pressed={(kind === 'body' ? 'training' : kind) === value} onClick={() => { setSelection((previous) => ({ ...previous, kind: value,
           ...(value === 'done' && previous.kind !== 'done' ? { year: Number(now.slice(0, 4)), month: Number(now.slice(5, 7)) } : {}) })); setSaved(false); }}>{LIFE_LABELS[value]}</button>)}</nav>
       {kind !== 'done' && kind !== 'body' && <div className="life-date-controls">
@@ -207,10 +215,10 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
         <button className="life-today" onClick={() => setSelection((previous) => ({ ...previous, year: Number(now.slice(0, 4)), month: Number(now.slice(5, 7)) }))}>今天</button>
       </div>}
     </div>
-    {kind === 'skin' && <div className="life-skin-toolbar"><span>皮肤状态 · 日常护理</span><button disabled={loading || !current || Boolean(error)} onClick={() => setSkinSettingsOpen(true)}>护理方案与在用清单 ↗</button></div>}
-    {(kind === 'eyes' || kind === 'discomfort') && !loading && current && !error && <LifeSymptomHistory key={kind} kind={kind} history={symptoms} onEdit={(date) => {
+    {kind === 'well' && <div className="life-skin-toolbar"><button disabled={loading || !current || Boolean(error)} onClick={() => setSkinSettingsOpen(true)}>护理方案与在用清单 ↗</button></div>}
+    {kind === 'well' && !loading && current && !error && <LifeSymptomHistory kind="well" history={symptoms} onEdit={(date, section) => {
       setSelection((previous) => ({ ...previous, year: Number(date.slice(0, 4)), month: Number(date.slice(5, 7)) }));
-      openEntry({ date, kind, ...symptomEntries[`${kind}:${date}`], mutationId: crypto.randomUUID() });
+      setWellEditing({ date, section });
     }} />}
     {kind === 'training' && <div className="life-training-heading"><div><h2>{month} 月运动计划</h2>
       <p role="status">{loading || trainingSource.busy ? '安排中…' : rolling ? `近 7 天 · 已完成 ${rolling.coverage.filter((item) => item.completed).length} / ${rolling.coverage.length} 项` : !hasCycle ? '待设置经期' : futurePlanCount ? `后续 ${futurePlanCount} 天已安排 · 按体感调整` : '历史运动'}</p></div>
@@ -249,7 +257,8 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
         onPeriodChange={(period) => setSelection((previous) => ({ ...previous, ...period }))}
         onEdit={(date) => openEntry({ date, kind: 'body', text: '', revision: '', ...current?.entries[`body:${date}`], mutationId: crypto.randomUUID() })} />
     </Suspense>}
-    {kind === 'done' ? <Suspense fallback={<p className="life-empty-state" role="status">读取周本…</p>}><LifeDoneList onExpired={onExpired} recordsControlsTarget={recordsControlsTarget} replanning={orche.replanning} /></Suspense> : kind !== 'body' && <section className={`life-calendar${kind === 'training' ? ' life-training-calendar' : kind === 'skin' || kind === 'eyes' || kind === 'discomfort' ? ' life-symptom-calendar' : ''}`} aria-label={`${year}年${month}月${LIFE_LABELS[kind]}日历`} aria-busy={loading}>
+    {kind === 'well' ? <LifeWellCalendar year={year} month={month} now={now} data={current} skinEntries={skinEntries} loading={loading} error={error} onEdit={date => setWellEditing({ date })} />
+      : kind === 'done' ? <Suspense fallback={<p className="life-empty-state" role="status">读取周本…</p>}><LifeDoneList onExpired={onExpired} recordsControlsTarget={recordsControlsTarget} replanning={orche.replanning} /></Suspense> : kind !== 'body' && <section className={`life-calendar${kind === 'training' ? ' life-training-calendar' : kind === 'skin' || kind === 'eyes' || kind === 'discomfort' ? ' life-symptom-calendar' : ''}`} aria-label={`${year}年${month}月${LIFE_LABELS[kind]}日历`} aria-busy={loading}>
       <div className="life-weekdays">{WEEKDAYS.map((day) => <span key={day}>{day}</span>)}</div>
       <div className="life-days">{cells.map((date, index) => {
         if (!date) return <div className="life-empty-day" key={`empty-${index}`} aria-hidden="true" />;
@@ -308,6 +317,14 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
           : <button onClick={() => setSettings(true)}>连接经期日历</button>}</div></footer>}
     {error && <div className="life-error-banner" role="alert">{error}<button onClick={() => setRetry((value) => value + 1)}>重试</button></div>}
     {periodError && <div className="life-error-banner" role="alert">{periodError}<button onClick={() => void syncPeriods(year, generation.current)}>重试</button></div>}
+    {wellEditing && current && !loading && !error && <LifeWellEditor key={wellEditing.date} date={wellEditing.date} section={wellEditing.section}
+      initial={wellDay(current.entries, wellEditing.date)} owner={owner} skinSettings={skinSettings} skinEntries={skinEntries} symptomEntries={symptomEntries}
+      onExpired={onExpired} onClose={() => setWellEditing(null)} onSave={value => {
+        const date = wellEditing.date;
+        setData(previous => previous ? { ...previous, entries: syncMakeupEntries({ ...previous.entries,
+          ...Object.fromEntries(WELL_KINDS.map(kind => [`${kind}:${date}`, value.entries[kind]])) }, date, value.makeup) } : previous);
+        setWellEditing(null); setSaved(true);
+      }} />}
     {draft && current && !loading && <LifeEditor key={`${draft.kind}:${draft.date}`} initial={{ ...draft,
       makeup: draft.makeup ?? current.entries[`${draft.kind}:${draft.date}`]?.makeup }} owner={owner} skinSettings={skinSettings} skinEntries={skinEntries} symptomEntries={symptomEntries} cycle={cycle} periodDays={current.periodDays} onExpired={onExpired}
       trainingTasks={rolling ? rolling.byDate.get(draft.date) ?? [] : undefined}

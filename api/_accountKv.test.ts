@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { kv } from './_accountKv';
 import { authorizeAccountScope, runAccountRequest } from './_accountScope';
+import { SAVE_WELL } from './_lifeWell';
 
 const raw = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), hget: vi.fn(), hgetall: vi.fn(),
   del: vi.fn(), mset: vi.fn(), eval: vi.fn() }));
@@ -9,6 +10,11 @@ const userA = 'a'.repeat(32), userB = 'b'.repeat(32);
 beforeEach(() => vi.clearAllMocks());
 
 describe('账号存储边界', () => {
+  it('bonWell 日记录、症状索引和保存回执全部按账号隔离', async () => {
+    const keys = ['bonlife:entries:v1:2026', 'bonlife:symptom-entries:v1', 'bonlife:well-mutation:v1:mutation'];
+    await runAccountRequest(async () => { authorizeAccountScope(userA); await kv.eval(SAVE_WELL, keys, ['2026-11-13']); });
+    expect(raw.eval).toHaveBeenCalledWith(SAVE_WELL, keys.map(key => `account:${userA}:${key}`), ['2026-11-13']);
+  });
   it('已包装的 HTTP 请求在鉴权前不能读写数据', () => {
     expect(() => runAccountRequest(() => kv.get('bill-details'))).toThrow('Unauthenticated');
     expect(raw.get).not.toHaveBeenCalled();

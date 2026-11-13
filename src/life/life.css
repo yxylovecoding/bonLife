@@ -378,6 +378,19 @@
 .life-calendar-strip.starts { margin-left: 4px; border-radius: 8px 0 0 8px; }
 .life-calendar-strip.ends { margin-right: 4px; border-radius: 0 8px 8px 0; }
 .life-calendar-strip.starts.ends { border-radius: 8px; }
+.life-well-calendar .life-day-content { flex-shrink: 0; width: 100%; gap: 5px; }
+.life-well-calendar .life-well-summary { -webkit-line-clamp: 2; line-height: 1.6; }
+.life-well-label { color: var(--life-muted); font-size: .9em; }
+.life-well-editor { width: min(680px, calc(100vw - 32px)); }
+.life-well-editor .persistent-form-body { padding-right: 4px; }
+.life-well-editor textarea { min-height: 80px; }
+.life-well-section { border-top: 1px solid var(--life-line); padding: 12px 0 4px; margin-top: 12px; }
+.life-well-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.life-well-section-heading > button:first-child { display: flex; align-items: center; gap: 10px; text-align: left; flex: 1; padding: 5px 0; font-size: 14px; font-weight: 500; }
+.life-well-section-heading span, .life-well-clear { color: var(--life-muted); }
+.life-well-section-heading .life-well-clear { width: 30px; height: 30px; font-size: 18px; }
+.life-well-clear-actions { display: flex; align-items: center; gap: 12px; font-size: 12px; margin-bottom: 12px; color: var(--life-muted); }
+.life-well-clear-actions button { padding: 4px 8px; color: var(--life-accent); }
 .life-day-symptoms { display: flex; flex-direction: column; gap: 4px; width: 100%; flex-shrink: 0; }
 .life-day-symptom { flex-shrink: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-size: 11px; line-height: 1.6; text-align: left; }
 @media (max-width: 600px) {

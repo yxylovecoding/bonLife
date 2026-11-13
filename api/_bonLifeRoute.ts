@@ -3,7 +3,9 @@ import { privateJson } from './_privateCache.js';
 import { withAccountScope } from './_accountRoute.js';
 import { hydrateMakeupEntries } from '../src/utils/lifeMakeup.js';
 import { DEFAULT_SKIN_SETTINGS, currentSkinSettings, parseSkinSettings, type SkinSettings } from '../src/utils/lifeSkin.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { parseWellEdit, type WellDay } from '../src/utils/lifeWell.js';
+import { SAVE_WELL } from './_lifeWell.js';
 import { kv } from './_accountKv.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { authOk, sameOrigin } from './_auth.js';
@@ -128,6 +130,20 @@ async function handler(req: VercelRequest, res: VercelResponse) {
         ['skin', settings.revision, body.mutationId as string, JSON.stringify(next), 'skin-settings']);
       if (!ok) return res.status(409).json({ error: '皮肤设置已在其他页面更新，请重新打开后修改' });
       return res.status(200).json({ settings: typeof raw === 'string' ? JSON.parse(raw) : raw });
+    }
+    if (body.action === 'save-well') {
+      let edit;
+      try { edit = parseWellEdit(body); }
+      catch { return res.status(400).json({ error: '记录内容无效' }); }
+      const payload = JSON.stringify(edit);
+      const signature = createHash('sha256').update(payload).digest('hex');
+      const [ok, raw] = await kv.eval<string[], [number, string | WellDay]>(SAVE_WELL,
+        [entriesKey(Number(edit.date.slice(0, 4))), LIFE_SYMPTOM_ENTRIES_KEY, `bonlife:well-mutation:v1:${edit.mutationId}`],
+        [edit.date, edit.mutationId, payload, signature]);
+      const current = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (ok === -1) return res.status(400).json({ error: '保存标识已使用，请重新编辑后保存' });
+      if (!ok) return res.status(409).json({ error: '这一天的记录已在其他页面更新', currentWell: current });
+      return res.status(200).json(current);
     }
     if (body.action !== 'save') return res.status(400).json({ error: '操作无效' });
     let edit;

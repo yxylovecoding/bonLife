@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { StorageOperation } from './_storageScriptIds.js';
 import type { StorageTransaction } from './_tursoTransaction.js';
+import { WELL_KINDS, type WellDay, type WellEdit, type WellEntries } from '../src/utils/lifeWell.js';
+import { EMPTY_MAKEUP } from '../src/utils/lifeMakeup.js';
 
 const json = (raw: string) => JSON.parse(raw);
 const photoValue = (raw: string) => raw.startsWith('"') ? String(json(raw)) : raw;
@@ -82,6 +84,38 @@ export async function runStorageOperation(tx: StorageTransaction, operation: Sto
       await tx.hset(key, { [args[0]]: args[3] });
       await tx.set(second, JSON.stringify({ signature: args[6], value: json(args[3]) }), { ex: 2_592_000 });
       return [1, args[3]];
+    }
+    case 'save-well': {
+      const [date, mutation, payload, signature] = args;
+      const edit: WellEdit = json(payload);
+      const readDay = async (): Promise<WellDay> => {
+        const entries = {} as WellEntries;
+        for (const kind of WELL_KINDS) {
+          const raw = await tx.hget(key, `${kind}:${date}`);
+          entries[kind] = raw ? json(raw) : { text: '', revision: '' };
+          delete entries[kind].makeup;
+        }
+        const shared = await tx.hget(key, `makeup:${date}`);
+        return { entries, makeup: shared ? json(shared).makeup : { ...EMPTY_MAKEUP } };
+      };
+      const current = await readDay();
+      const receipt = await tx.get(third);
+      if (receipt) return [receipt === signature ? 1 : -1, JSON.stringify(current)];
+      if (WELL_KINDS.some(kind => edit.entries[kind] && edit.entries[kind]!.revision !== current.entries[kind].revision)
+        || edit.makeup && edit.makeup.revision !== current.makeup.revision) return [0, JSON.stringify(current)];
+      for (const kind of WELL_KINDS) {
+        const entry = edit.entries[kind];
+        if (!entry) continue;
+        const next = { ...entry, revision: mutation };
+        if (kind !== 'mood' && next[kind] === undefined) Object.assign(next, { [kind]: current.entries[kind][kind] });
+        const field = `${kind}:${date}`;
+        await tx.hset(key, { [field]: JSON.stringify(next) });
+        if (kind === 'eyes' || kind === 'discomfort') await tx.hset(second, { [field]: JSON.stringify(next) });
+      }
+      if (edit.makeup) await tx.hset(key, { [`makeup:${date}`]: JSON.stringify({ text: '', revision: mutation,
+        makeup: { ...edit.makeup, revision: mutation } }) });
+      await tx.set(third, signature, { ex: 2_592_000 });
+      return [1, JSON.stringify(await readDay())];
     }
     case 'save-life-entry': {
       const raw = await tx.hget(key, args[0]);

@@ -7,8 +7,8 @@ import { makeupSummary, parseMakeupRecord, type MakeupRecord } from './lifeMakeu
 
 export const LIFE_KINDS = ['skin', 'eyes', 'discomfort', 'mood', 'body', 'training'] as const;
 export type LifeKind = typeof LIFE_KINDS[number];
-export type LifeView = LifeKind | 'done';
-export const LIFE_LABELS: Record<LifeView, string> = { skin: '皮肤', eyes: '眼睛', discomfort: '身体', mood: '情绪', body: '身体数据', training: 'BonFit', done: 'DoneList' };
+export type LifeView = LifeKind | 'well' | 'done';
+export const LIFE_LABELS: Record<LifeView, string> = { well: 'bonWell', skin: '皮肤', eyes: '眼睛', discomfort: '身体', mood: '情绪', body: '身体数据', training: 'BonFit', done: 'DoneList' };
 export const LIFE_TEXT_LIMIT = 2000;
 export const BODY_FIELDS = {
   weight: { label: '体重', unit: 'kg', max: 500 },

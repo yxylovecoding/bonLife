@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 // Exact source fingerprints: changed or new Redis scripts must receive an
 // explicitly reviewed SQL transaction port. Never guess or execute Lua in SQL.
 export const STORAGE_SCRIPT_IDS = {
+  "3e026d744a9ca2e7ed3dea7ea2ab96a2c867f3c3d632c33a7f34dcf620d8c985": "save-well", // SAVE_WELL
   'f3fbe77889cedb7cf08eb4692371af7fb3c7960b76559c7be435943cfb27ee20': 'read-make-quota', // READ_MAKE_QUOTA
   '877136d8c4f71a457b61728ffbab0948edbdbbdc94142c16f50f25643f400573': 'save-clothes', // SAVE_CLOTHES
   '2072bbda9166cb2a6dd95c091af8899cb7f66b0cffb4757d90163944e1089a35': 'save-periods', // _bonLife.ts:70

@@ -2,9 +2,10 @@ import { requestWithRetry } from '../utils/requestWithRetry';
 import { accountFetch } from '../utils/authClient';
 import { LIFE_KINDS, parseLifeEdit, type LifeEntry, type LifeKind } from '../utils/bonLife';
 import { parseSymptomNames, type SymptomNames } from '../utils/lifeSymptoms';
+import type { WellDay } from '../utils/lifeWell';
 
 export class LifeError extends Error {
-  constructor(message: string, public status: number, public current?: LifeEntry) { super(message); }
+  constructor(message: string, public status: number, public current?: LifeEntry, public currentWell?: WellDay) { super(message); }
 }
 
 export async function lifeRequest<T>(method: string, body?: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
@@ -19,7 +20,7 @@ export async function lifeRequest<T>(method: string, body?: Record<string, unkno
       throw error;
     });
     if (!response.ok || !result || typeof result !== 'object') {
-      throw new LifeError(result?.error || '服务暂不可用，请重试', response.status, result?.current);
+      throw new LifeError(result?.error || '服务暂不可用，请重试', response.status, result?.current, result?.currentWell);
     }
     return result;
   }, { signal, retry: method === 'GET', timeoutMessage: '连接超时，请重试', networkMessage: '网络连接失败，请重试' });
