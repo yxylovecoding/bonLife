@@ -7,6 +7,7 @@ import { weatherSymbol } from '../src/utils/weather';
 
 const { store, hashes } = vi.hoisted(() => ({ store: new Map<string, unknown>(), hashes: new Map<string, unknown>() }));
 vi.mock('./_accountKv.js', () => ({ kv: { eval: async (_script: string, [key]: string[]) => { store.delete(key); return 1; }, get: async (key: string) => store.get(key) ?? null,
+  mget: async (...keys: string[]) => keys.map(key => store.get(key) ?? null),
   set: async (key: string, value: unknown) => { store.set(key, value); return 'OK'; }, hgetall: async (key: string) => hashes.get(key) ?? null } }));
 const datong = { name: '大同市', latitude: 40.09, longitude: 113.29, timezone: 'Asia/Shanghai', population: 3105591 };
 const linfen = { name: '临汾', latitude: 36.09, longitude: 111.52, timezone: 'Asia/Shanghai', population: 959198 };

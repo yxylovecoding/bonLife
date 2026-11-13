@@ -85,12 +85,7 @@ export function createTursoKv(client: Client, clock = Date.now) {
       return Number(next);
     }),
     mget: <T extends unknown[]>(...keys: string[]) => transaction(async tx => {
-      const values: unknown[] = [];
-      for (const key of keys) {
-        const entry = await tx.key(key);
-        values.push(decodeStorage(entry?.kind === 'string' ? entry.value : null));
-      }
-      return values as T;
+      return (await tx.mget(keys)).map(value => decodeStorage(value)) as T;
     }, false),
     mset: (values: Record<string, unknown>) => transaction(async tx => {
       for (const [key, value] of Object.entries(values)) await tx.set(key, encodeStorage(value));

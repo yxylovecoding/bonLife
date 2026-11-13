@@ -12,6 +12,7 @@ const m = vi.hoisted(() => ({ data: new Map<string, any>(), tasks: [] as TickTic
   acquire: vi.fn(), release: vi.fn(), rain: vi.fn(), weather: vi.fn(), laundry: vi.fn(), exercise: vi.fn(), hairOutlook: vi.fn(), chargingOutlook: vi.fn(),
   trip: vi.fn(), wish: vi.fn(), period: vi.fn(), pickupOutlook: vi.fn(), tagsRead: vi.fn(), locationFailure: false, city: '北京' }));
 vi.mock('./_accountKv.js', () => ({ kv: {
+  mget: async (...keys: string[]) => keys.map(key => structuredClone(m.data.get(key) ?? null)),
   mset: async (values: Record<string, unknown>) => { for (const [key, value] of Object.entries(values)) m.data.set(key, structuredClone(value)); },
   get: async (key: string) => structuredClone(m.data.get(key) ?? null), hgetall: async (key: string) => structuredClone(m.data.get(key) ?? null),
   eval: async (_script: string, [key]: string[]) => { m.data.delete(key); return 1; },

@@ -5,6 +5,7 @@ import { readOutlookSnapshot } from './_bonCal/provider';
 import { DEFAULT_OUTLOOK_RULES } from '../src/boncal/events';
 const { data, google } = vi.hoisted(() => ({ data: new Map<string, any>(), google: vi.fn() }));
 vi.mock('./_accountKv.js', () => ({ kv: {
+  mget: async (...keys: string[]) => keys.map(key => structuredClone(data.get(key) ?? null)),
   get: async (key: string) => structuredClone(data.get(key) ?? null),
   hgetall: async (key: string) => structuredClone(data.get(key) ?? {}),
   set: async (key: string, value: unknown, options?: { nx?: boolean }) => { if (options?.nx && data.has(key)) return null; data.set(key, structuredClone(value)); return 'OK'; },

@@ -19,6 +19,7 @@ import { CATEGORIES, type ClothesItem } from '../src/clothes/types';
 const { data, hashes, auth, origin, evalMock } = vi.hoisted(() => ({ data: new Map<string, any>(), hashes: new Map<string, Record<string, any>>(), auth: vi.fn(), origin: vi.fn(), evalMock: vi.fn() }));
 vi.mock('./_auth.js', () => ({ authOk: auth, sameOrigin: origin }));
 vi.mock('@vercel/kv', () => ({ kv: { get: async (key: string) => data.get(key) ?? null,
+  mget: async (...keys: string[]) => keys.map(key => data.get(key) ?? null),
   mset: async (values: Record<string, unknown>) => { for (const [key, value] of Object.entries(values)) data.set(key, value); return 'OK'; },
   set: async (key: string, value: unknown) => { data.set(key, value); return 'OK'; }, hgetall: async (key: string) => hashes.get(key) ?? null,
   hget: vi.fn(async (key: string, field: string) => hashes.get(key)?.[field] ?? null), eval: evalMock } }));

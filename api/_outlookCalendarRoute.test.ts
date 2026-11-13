@@ -6,6 +6,7 @@ import { DEFAULT_OUTLOOK_RULES } from '../src/utils/outlookCalendar';
 const { data, authenticated, sameOrigin } = vi.hoisted(() => ({ data: new Map<string, unknown>(), authenticated: vi.fn(), sameOrigin: vi.fn() }));
 vi.mock('./_auth.js', () => ({ authOk: authenticated, sameOrigin }));
 vi.mock('@vercel/kv', () => ({ kv: {
+  mget: async (...keys: string[]) => keys.map(key => data.get(key) ?? null),
   get: async (key: string) => data.get(key) ?? null,
   set: async (key: string, value: unknown, options?: { nx?: boolean }) => {
     if (options?.nx && data.has(key)) return null;

@@ -16,6 +16,7 @@ vi.mock('./_lifeTraining.js', () => ({ syncTrainingSource: vi.fn(async () => und
 vi.mock('./_lifeDone.js', () => ({ syncRecentLifeDone: doneSync, collectCompleted: async () => [] }));
 vi.mock('./_auth.js', () => ({ authOk: auth }));
 vi.mock('@vercel/kv', () => ({ kv: {
+  mget: async (...keys: string[]) => keys.map(key => structuredClone(data.get(key) ?? null)),
   get: async (key: string) => structuredClone(data.get(key) ?? null),
   set: async (key: string, value: unknown, options?: { nx?: boolean }) => {
     if (options?.nx && data.has(key)) return null;

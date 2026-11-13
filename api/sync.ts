@@ -7,7 +7,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { MONTHLY_BACKUP_INDEX_KEY, type MonthlyBackupIndexEntry } from './_monthlyBackup.js';
 import { mergeRecoveredMonthlyInvestmentState, restoreMonthlyInvestmentState } from './_restoreMonthlyInvestment.js';
 import { SYNC_STORE_KEYS, type SyncPayload } from './_syncKeys.js';
-import { BonCalConflict, readBonCalInputs, readBonCalView, repairBonCalStorage, saveBonCalUpload, withCalendarWriteLock } from './_bonCal/repository.js';
+import { BonCalConflict, readBonCalInputs, repairBonCalStorage, saveBonCalUpload } from './_bonCal/repository.js';
 import { migrateOwnerSchoolPeriods } from './_schoolPeriodsMigration.js';
 
 const AUGUST_INVESTMENT_RECOVERY_MARKER = 'sync-recovery:2026-08-investment:2026-09-03-v1';
@@ -75,7 +75,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method === 'GET') {
     await repairBonCalStorage();
-    const values = await Promise.all(SYNC_STORE_KEYS.map((k) => kv.get(k)));
+    const values = await kv.mget(...SYNC_STORE_KEYS);
     const result: SyncPayload = {};
     let hasAny = false;
     SYNC_STORE_KEYS.forEach((k, i) => {
@@ -91,7 +91,10 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       result['monthly-records'] = await restoreAugustInvestmentFromLatestBackup(result['monthly-records']);
       result['monthly-records'] = await mergeAugustInvestmentFromPreRestoreState(result['monthly-records']);
     }
-    const canonical = await readBonCalView();
+    // Startup only needs saved calendar fields and their revision. Loading the
+    // full view also fetches holiday providers and unrelated clothes/Outlook
+    // data, holding up the entire ledger behind those extra requests.
+    const canonical = await readBonCalInputs();
     return privateJson(req, res, { ...result, 'calendar-tags': canonical.calendar, 'trip-tags': canonical.tripSettings,
       ...(hasAny ? { 'app-config': canonical.rawConfig } : {}), bonCalRevision: canonical.revision });
   }

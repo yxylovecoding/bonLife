@@ -14,6 +14,7 @@ const { data, auth, origin, evalMock, getHash, set } = vi.hoisted(() => ({
 }));
 vi.mock('./_auth.js', () => ({ authOk: auth, sameOrigin: origin }));
 vi.mock('@vercel/kv', () => ({ kv: {
+  mget: async (...keys: string[]) => keys.map(key => data.get(key) ?? null),
   mset: async (values: Record<string, unknown>) => { for (const [key, value] of Object.entries(values)) data.set(key, value); return 'OK'; },
   get: async (key: string) => data.get(key) ?? null, hgetall: getHash, eval: evalMock,
   set, del: async (key: string) => data.delete(key),

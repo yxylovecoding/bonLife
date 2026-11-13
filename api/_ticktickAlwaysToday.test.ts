@@ -4,7 +4,7 @@ import { planTickTickDay } from './_ticktickDailyPlan';
 import { BEIJING, GUANGZHOU } from '../src/utils/internship';
 import { routineTaskDate, syncTickTickAlwaysToday, syncTickTickRoutines, type TickTickApi, type TickTickTask } from './_ticktickTrips';
 
-vi.mock('@vercel/kv', () => ({ kv: { get: async () => null, hgetall: async () => null, set: async () => 'OK', eval: async () => 1 } }));
+vi.mock('@vercel/kv', () => ({ kv: { mget: async (...keys: string[]) => keys.map(() => null), get: async () => null, hgetall: async () => null, set: async () => 'OK', eval: async () => 1 } }));
 
 const day = '2026-10-21';
 const makeTask = (id: string, extra: Partial<TickTickTask> = {}): TickTickTask => ({

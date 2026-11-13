@@ -18,6 +18,22 @@ export class StorageTransaction {
     if (entry && entry.kind !== 'string') throw new Error('Storage type mismatch');
     return entry?.value ?? null;
   }
+  async mget(keys: string[]): Promise<(string | null)[]> {
+    const values = new Map<string, string | null>();
+    const unique = [...new Set(keys)];
+    // Keep one snapshot, while bounding SQLite's parameter count. MGET treats
+    // non-string and expired keys as missing and preserves order/duplicates.
+    for (let offset = 0; offset < unique.length; offset += 500) {
+      const chunk = unique.slice(offset, offset + 500);
+      const { rows } = await this.sql.execute({
+        sql: `SELECT key,value FROM storage_keys WHERE kind='string'
+          AND (expires_at IS NULL OR expires_at>?) AND key IN (${chunk.map(() => '?').join(',')})`,
+        args: [this.now, ...chunk],
+      });
+      for (const row of rows) values.set(String(row.key), row.value as string | null);
+    }
+    return keys.map(key => values.get(key) ?? null);
+  }
   async remove(key: string) {
     const exists = Boolean(await this.key(key));
     await this.sql.batch([

@@ -14,6 +14,7 @@ import { authOk, readAccount, readSession } from './_auth';
 const { data, storage } = vi.hoisted(() => {
   const data = new Map<string, unknown>();
   const storage = {
+    mget: vi.fn(async (...keys: string[]) => keys.map(key => data.get(key) ?? null)),
     get: vi.fn(async (key: string) => data.get(key) ?? null),
     mset: vi.fn(async (values: Record<string, unknown>) => { for (const [key, value] of Object.entries(values)) data.set(key, value); return 'OK'; }),
     set: vi.fn(async (key: string, value: unknown, options?: { nx?: boolean }) => {

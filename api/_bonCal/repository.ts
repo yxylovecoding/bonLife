@@ -117,10 +117,10 @@ export async function saveUploadedCalendarState(value: unknown) {
 }
 
 export async function readBonCalInputs() {
-  const [rawCalendar, rawConfig, rawTrips, locationVersion, sourceVersion] = await Promise.all([
-    kv.get<Record<string, unknown>>(CALENDAR_KEY), kv.get<{ config?: Record<string, unknown> }>('app-config'),
-    kv.get<Record<string, unknown>>('trip-tags'), kv.get('boncal:location-version:v1'), kv.get('boncal:source-version:v1'),
-  ]);
+  const [rawCalendar, rawConfig, rawTrips, locationVersion, sourceVersion] = await kv.mget<[
+    Record<string, unknown> | null, { config?: Record<string, unknown> } | null,
+    Record<string, unknown> | null, unknown, unknown,
+  ]>(CALENDAR_KEY, 'app-config', 'trip-tags', 'boncal:location-version:v1', 'boncal:source-version:v1');
   const calendar = repairCalendarState(rawCalendar ?? {});
   const config = calendarConfig(rawConfig?.config ?? {}), tripSettings = pickFields(rawTrips, BONCAL_TRIP_FIELDS);
   const revision = createHash('sha256').update(JSON.stringify([pickFields(calendar, BONCAL_CALENDAR_FIELDS), config, tripSettings, locationVersion, sourceVersion])).digest('hex');

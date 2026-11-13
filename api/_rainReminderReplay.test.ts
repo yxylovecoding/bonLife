@@ -8,6 +8,7 @@ import type { TickTickTask } from './_ticktickTrips';
 const m = vi.hoisted(() => ({ data: new Map<string, any>(), tasks: [] as TickTickTask[], abandoned: [] as TickTickTask[], history: [] as TickTickTask[],
   create: vi.fn(), get: vi.fn(), historyRead: vi.fn(), filter: vi.fn(), acquire: vi.fn(), release: vi.fn(), weather: vi.fn(), locations: vi.fn() }));
 vi.mock('./_accountKv.js', () => ({ kv: {
+  mget: async (...keys: string[]) => keys.map(key => structuredClone(m.data.get(key) ?? null)),
   get: async (key: string) => structuredClone(m.data.get(key) ?? null),
   set: async (key: string, value: unknown, options?: { nx?: boolean }) => {
     if (options?.nx && m.data.has(key)) return null;

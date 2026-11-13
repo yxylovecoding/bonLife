@@ -10,6 +10,7 @@ import { routineTaskDate, separateTickTickSprays, syncTickTickAlwaysToday, syncT
 
 const { data } = vi.hoisted(() => ({ data: new Map<string, unknown>() }));
 vi.mock('@vercel/kv', () => ({ kv: {
+  mget: async (...keys: string[]) => keys.map(key => structuredClone(data.get(key) ?? null)),
   get: async (key: string) => structuredClone(data.get(key) ?? null),
   hgetall: async (key: string) => structuredClone(data.get(key) ?? null),
   eval: async (_script: string, [key]: string[]) => { data.delete(key); return 1; },

@@ -97,6 +97,29 @@ describe('Turso network recovery', () => {
 });
 
 describe('Turso storage contract', () => {
+  it('batches string reads in one snapshot and preserves ordering, expiry and namespaces', async () => {
+    await kv.mset({ 'account:a:value': { amount: 123 }, 'account:b:value': 'other', text: 'kept' });
+    await kv.set('expired', 'old', { ex: 1 });
+    await kv.hset('hash', { one: 1 });
+    now += 1001;
+    const open = client.transaction.bind(client);
+    const reads: unknown[] = [];
+    const transactions = vi.spyOn(client, 'transaction').mockImplementation(async mode => {
+      const tx = await open(mode);
+      const execute = tx.execute.bind(tx);
+      vi.spyOn(tx, 'execute').mockImplementation(async statement => { reads.push(statement); return execute(statement); });
+      return tx;
+    });
+    expect(await kv.mget('text', 'account:a:value', 'missing', 'expired', 'hash', 'text')).toEqual([
+      'kept', { amount: 123 }, null, null, null, 'kept',
+    ]);
+    expect(transactions).toHaveBeenCalledTimes(1);
+    expect(reads).toHaveLength(1);
+    expect(await kv.mget()).toEqual([]);
+    expect(await kv.mget(...Array.from({ length: 1001 }, (_, i) => `missing:${i}`), 'text')).toEqual([
+      ...Array(1001).fill(null), 'kept',
+    ]);
+  });
   it('preserves wire values, hash fields, account namespaces and missing values', async () => {
     const fixtures = { text: 'abc', number: 42, null: null, jsonString: '"quoted"', zeroPrefix: '001', large: '9007199254740993', object: { a: [1, null] } };
     await kv.mset(fixtures);
