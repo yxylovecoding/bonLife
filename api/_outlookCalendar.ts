@@ -3,6 +3,7 @@ import { activeRuleOrder } from '../src/utils/schedulingRules.js';
 import ICAL from 'ical.js';
 import { wallTimeInstant } from './_calendarTimezone.js';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import https from 'node:https';
 import { buildOutlookSnapshot, isCalendarDate, type OutlookCalendarKind, type OutlookConflictPolicy, type OutlookDayEvent, type OutlookRules } from '../src/utils/outlookCalendar.js';
 
 export interface OutlookSource {
@@ -115,7 +116,7 @@ export function calendarReadFailure(error: unknown) {
         'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE']);
       const cause = error.cause as { code?: string; message?: string; errors?: { code?: string }[] } | undefined;
       if (cause?.message === 'unexpected redirect') return { reason: 'redirect' };
-      const codes = [cause?.code, ...cause?.errors?.map(item => item.code) ?? []]
+      const codes = [cause?.code, ...(Array.isArray(cause?.errors) ? cause.errors.map(item => item?.code) : [])]
         .filter((code): code is string => Boolean(code && safeCodes.has(code)));
       return { reason: 'network', ...(codes.length ? { codes: [...new Set(codes)] } : {}) };
     }
@@ -131,10 +132,60 @@ export function calendarReadFailure(error: unknown) {
 }
 
 export async function fetchCalendar(url: string): Promise<string> {
+  const validated = validateOutlookUrl(url);
+  let ipv4 = false;
+  for (let attempt = 0; ; attempt++) {
+    try { return await (ipv4 ? fetchCalendarIpv4(validated) : fetchCalendarOnce(validated)); }
+    catch (error) {
+      const failure = calendarReadFailure(error);
+      const retryable = error instanceof CalendarReadError ? [429, 500, 502, 503, 504].includes(error.http ?? 0)
+        : failure.reason === 'network' || failure.reason === 'timeout';
+      if (!retryable || attempt >= 1) throw error;
+      ipv4 = 'codes' in failure && failure.codes?.includes('UND_ERR_CONNECT_TIMEOUT') === true;
+      // Retrying a read cannot duplicate task/calendar writes. Never fall back
+      // to yesterday's calendar when the fresh read still fails.
+      console.warn('[outlook-calendar-read-retry]', JSON.stringify(failure));
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+}
+
+// On a fetch connection timeout, try a separate IPv4 connection once. Keep the
+// same HTTPS host allowlist, certificate checks, body cap and absolute timeout.
+// Native HTTPS never follows redirects, so private URLs cannot leave Outlook.
+function fetchCalendarIpv4(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const request = https.get(validateOutlookUrl(url), {
+      family: 4, signal: AbortSignal.timeout(15_000), headers: { Accept: 'text/calendar' },
+    }, response => {
+      if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
+        response.destroy(); reject(new CalendarReadError('http', response.statusCode)); return;
+      }
+      const chunks: Buffer[] = [];
+      let length = 0, failed = false;
+      response.on('data', (chunk: Buffer) => {
+        if (failed) return;
+        length += chunk.length;
+        if (length > 4_000_000) {
+          failed = true; request.destroy(new Error('日历内容过大')); return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => { if (!failed) resolve(Buffer.concat(chunks).toString('utf8')); });
+      response.on('error', reject);
+    });
+    request.on('error', reject);
+  });
+}
+
+async function fetchCalendarOnce(url: string): Promise<string> {
   const response = await fetch(validateOutlookUrl(url), {
     redirect: 'error', signal: AbortSignal.timeout(15_000), headers: { Accept: 'text/calendar' },
   });
-  if (!response.ok || !response.body) throw new CalendarReadError('http', response.status);
+  if (!response.ok || !response.body) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new CalendarReadError('http', response.status);
+  }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let length = 0;

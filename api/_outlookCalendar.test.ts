@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calendarReadFailure, decryptOutlookConnection, encryptOutlookConnection, parseOutlookCalendar, parseOutlookInput, readOutlookSnapshot, validateOutlookUrl } from './_outlookCalendar';
+import { calendarReadFailure, decryptOutlookConnection, encryptOutlookConnection, fetchCalendar, parseOutlookCalendar, parseOutlookInput, readOutlookSnapshot, validateOutlookUrl } from './_outlookCalendar';
 import { DEFAULT_OUTLOOK_RULES } from '../src/utils/outlookCalendar';
 import { planTickTickDay, type DailyPlanState } from './_ticktickDailyPlan';
+import https from 'node:https';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 
 const calendar = (events: string) => `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//test//EN\r\n${events}\r\nEND:VCALENDAR\r\n`;
 const event = (properties: string) => `BEGIN:VEVENT\r\n${properties.replace(/\n/g, '\r\n')}\r\nEND:VEVENT`;
@@ -12,6 +15,46 @@ const input = { playUrl, classUrl, policy: 'manual' as const, rules: DEFAULT_OUT
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Outlook ICS 解析', () => {
+  it('连接超时后尝试受限的 IPv4 读取，仍不跟随重定向', async () => {
+    const valid = calendar('');
+    const fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed', { cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } }));
+    vi.stubGlobal('fetch', fetch);
+    const get = vi.spyOn(https, 'get').mockImplementation(((_url: string, options: any, callback: (response: any) => void) => {
+      expect(options).toMatchObject({ family: 4, headers: { Accept: 'text/calendar' } });
+      expect(options.signal).toBeInstanceOf(AbortSignal);
+      const request = new EventEmitter();
+      queueMicrotask(() => {
+        const response = Object.assign(new PassThrough(), { statusCode: 200 });
+        callback(response); response.end(valid);
+      });
+      return request;
+    }) as any);
+    try {
+      expect(await fetchCalendar(playUrl)).toBe(valid);
+      expect(fetch).toHaveBeenCalledTimes(1); expect(get).toHaveBeenCalledTimes(1);
+      get.mockImplementation(((_url: string, _options: any, callback: (response: any) => void) => {
+        const request = new EventEmitter();
+        queueMicrotask(() => callback(Object.assign(new PassThrough(), { statusCode: 302, headers: { location: 'https://private.invalid' } })));
+        return request;
+      }) as any);
+      await expect(fetchCalendar(playUrl)).rejects.toThrow('订阅链接暂不可用');
+      expect(get).toHaveBeenCalledTimes(2);
+    } finally { get.mockRestore(); }
+  });
+  it('Outlook 短暂 500 后只读重试一次，永久失败仍中止且不泄露上游正文', async () => {
+    const valid = calendar(event('UID:one\nDTSTART;VALUE=DATE:20261004\nDTEND;VALUE=DATE:20261005\nSUMMARY:活动'));
+    const fetch = vi.fn().mockResolvedValueOnce(new Response('PRIVATE upstream', { status: 500 }))
+      .mockResolvedValueOnce(new Response(valid));
+    vi.stubGlobal('fetch', fetch);
+    expect(await fetchCalendar(playUrl)).toBe(valid);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    fetch.mockReset().mockImplementation(async () => new Response('PRIVATE', { status: 503 }));
+    await expect(fetchCalendar(playUrl)).rejects.toThrow('订阅链接暂不可用');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    fetch.mockReset().mockResolvedValue(new Response('PRIVATE', { status: 404 }));
+    await expect(fetchCalendar(playUrl)).rejects.toThrow('订阅链接暂不可用');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it('诊断区分 HTTP、超时和解析失败，日志不包含订阅地址或响应正文', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -22,6 +65,12 @@ describe('Outlook ICS 解析', () => {
       expect(calendarReadFailure(new DOMException('secret URL', 'TimeoutError'))).toEqual({ reason: 'timeout' });
       expect(calendarReadFailure(new Error('日程时段无效'))).toEqual({ reason: 'invalid-duration' });
       expect(calendarReadFailure(new Error(playUrl))).toEqual({ reason: 'parse' });
+      expect(calendarReadFailure(new TypeError('fetch failed', { cause: { code: 'ENOTFOUND', hostname: playUrl } })))
+        .toEqual({ reason: 'network', codes: ['ENOTFOUND'] });
+      expect(calendarReadFailure(new TypeError('fetch failed', { cause: { errors: [{ code: 'ECONNRESET' }, { code: 'PRIVATE' }] } })))
+        .toEqual({ reason: 'network', codes: ['ECONNRESET'] });
+      expect(calendarReadFailure(new TypeError('fetch failed', { cause: { message: 'unexpected redirect' } })))
+        .toEqual({ reason: 'redirect' });
     } finally { warn.mockRestore(); }
   });
   it('共享解析仍分别展开窗口和改期例外，下次读取立即采用新内容', async () => {
