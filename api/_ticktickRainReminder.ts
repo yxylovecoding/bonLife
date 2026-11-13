@@ -38,7 +38,7 @@ export async function planRainReminder(api: TickTickApi, options: {
   if (rainy) {
     const time = `${day}T08:00:00+0800`;
     await api.createTask({ projectId: options.projectId, title: '关窗', startDate: time, dueDate: time,
-      timeZone: 'Asia/Shanghai', isAllDay: false, priority: 0, tags: ['活', '当天'], reminders: ['TRIGGER:PT0S'] });
+      timeZone: 'Asia/Shanghai', isAllDay: false, priority: 5, tags: ['活', '当天'], reminders: ['TRIGGER:PT0S'] });
   }
   finish(rainy);
   return { reason: rainy ? '有雨，已生成当天 08:00 关窗提醒' : '当天预报无雨，无需关窗提醒' };

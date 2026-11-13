@@ -24,7 +24,7 @@ describe('boncal 晨间雨天关窗', () => {
     await expect(planRainReminder({ createTask } as unknown as TickTickApi, { ...o, manualDate: '2026-11-11' })).rejects.toThrow('补跑日期');
     expect(createTask).not.toHaveBeenCalled();
     await planRainReminder({ createTask } as unknown as TickTickApi, { ...o, manualDate: day });
-    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ startDate: `${day}T08:00:00+0800`, reminders: ['TRIGGER:PT0S'] }));
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ priority: 5, startDate: `${day}T08:00:00+0800`, reminders: ['TRIGGER:PT0S'] }));
     expect(m.store.has(key)).toBe(false);
   });
   it.each(['00:01', '04:59', '05:00', '12:00', '20:00'])('%s 不查天气或消耗当天机会', async time => {
@@ -32,13 +32,13 @@ describe('boncal 晨间雨天关窗', () => {
     expect(await planRainReminder({} as TickTickApi, o)).toEqual({ reason: '不在晨间检查时段（05:01–11:59）' });
     expect(m.locations).not.toHaveBeenCalled(); expect(o.deferState).not.toHaveBeenCalled();
   });
-  it('按本轮 boncal 城市创建 08:00 定时提醒，只有提交后才记录当天', async () => {
+  it('按本轮 boncal 城市创建最高优先级的 08:00 定时提醒，只有提交后才记录当天', async () => {
     const createTask = vi.fn().mockResolvedValue(reminder()), o = options();
     expect(await planRainReminder({ createTask } as unknown as TickTickApi, o)).toEqual({ reason: '有雨，已生成当天 08:00 关窗提醒' });
     expect(m.locations).toHaveBeenCalledWith(day, day, o.calendarState);
     expect(m.weather).toHaveBeenCalledWith(city, day, day, 'Asia/Shanghai');
     expect(createTask).toHaveBeenCalledWith({ projectId: 'life', title: '关窗', startDate: `${day}T08:00:00+0800`,
-      dueDate: `${day}T08:00:00+0800`, timeZone: 'Asia/Shanghai', isAllDay: false, priority: 0,
+      dueDate: `${day}T08:00:00+0800`, timeZone: 'Asia/Shanghai', isAllDay: false, priority: 5,
       tags: ['活', '当天'], reminders: ['TRIGGER:PT0S'] });
     expect(m.store.has(key)).toBe(false);
     await o.deferState.mock.calls[0][0]();
@@ -51,11 +51,12 @@ describe('boncal 晨间雨天关窗', () => {
     await planRainReminder({ createTask } as unknown as TickTickApi, o);
     expect(createTask).toHaveBeenCalledTimes(rain ? 1 : 0); expect(o.deferState).toHaveBeenCalledOnce();
   });
-  it.each([0, 2, -1])('同日已有状态 %s 的关窗任务不重复创建', async status => {
+  it.each([[0, 0], [0, 5], [2, 0], [2, 5], [-1, 0], [-1, 5]])('同日已有状态 %s、优先级 %s 的关窗任务不重复创建', async (status, priority) => {
     const o = options();
-    if (status === -1) o.abandonedTasks = [reminder(status)];
-    else if (status === 2) o.completedTasks = [reminder(status)];
-    else o.tasks = [reminder(status)];
+    const existing = { ...reminder(status), priority };
+    if (status === -1) o.abandonedTasks = [existing];
+    else if (status === 2) o.completedTasks = [existing];
+    else o.tasks = [existing];
     expect(await planRainReminder({} as TickTickApi, o)).toEqual({ reason: '已有同日关窗，不重复创建' });
     expect(m.weather).not.toHaveBeenCalled(); expect(o.deferState).toHaveBeenCalledOnce();
   });

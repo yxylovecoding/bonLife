@@ -82,7 +82,14 @@ it('下午补跑经过真实规划、提交及最终回读，只创建一次 08:
   expect(report.mock.calls.at(-1)![0]).toMatchObject({ phase: 'finished', rule: { status: 'success', updated: 1 }, checkedDay: date,
     tasks: [{ id: 'created', startDate: `${date}T08:00:00+0800`, dueDate: `${date}T08:00:00+0800`, tags: ['活', '当天'], reminders: ['TRIGGER:PT0S'] }] });
   expect(m.get).toHaveBeenCalledTimes(2); expect(m.data.get(key)).toBe(date);
+  expect(m.tasks).toEqual([expect.objectContaining({ title: '关窗', priority: 5 })]);
   expect((await run())[0].phase).toBe('already-attempted'); expect(m.create).toHaveBeenCalledOnce();
+});
+it('新建关窗回读未保留最高优先级时，规则失败且不记录当天成功', async () => {
+  m.get.mockImplementation(async () => ({ ...m.tasks[0], priority: 0 }));
+  const result = await run();
+  expect(m.create).toHaveBeenCalledWith(expect.objectContaining({ priority: 5 }));
+  expect(result.at(-1).rule.status).toBe('failed'); expect(m.data.has(key)).toBe(false);
 });
 it.each([0, 2, -1])('无当天标记但已有状态 %s 的今日提醒不重复创建', async status => {
   if (status === 0) m.tasks = [reminder()]; else if (status === 2) m.history = [reminder(2)]; else m.abandoned = [reminder(-1)];

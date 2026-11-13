@@ -998,7 +998,7 @@ describe('雨天关窗独立于 Outlook 刷新', () => {
     expect(m.weather).toHaveBeenCalledWith(expect.objectContaining(GUANGZHOU), day, day, 'Asia/Shanghai');
     const reminder = m.tasks.find(t => t.title === '关窗')!;
     expect(reminder).toMatchObject({ startDate: `${day}T08:00:00+0800`, dueDate: `${day}T08:00:00+0800`,
-      tags: expect.arrayContaining(['活', '当天']), reminders: ['TRIGGER:PT0S'] });
+      priority: 5, tags: expect.arrayContaining(['活', '当天']), reminders: ['TRIGGER:PT0S'] });
     expect(m.get).toHaveBeenCalledWith('life', reminder.id);
     expect(m.data.get(key)).toBe(day);
     expect(m.tasks.find(t => t.id === 'keep')).toEqual(original);
