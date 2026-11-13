@@ -1,4 +1,4 @@
-import type { ClothesCalendar, ClothesDayContext, ClothesItem, ClothesLocation, Outfit, Scene, WearRecord, WeatherSnapshot } from './types';
+import type { ClothesCalendar, ClothesDayContext, ClothesItem, Outfit, Scene, WearRecord, WeatherSnapshot } from './types';
 import { itemCategories, outfitPairCounts, pairingScore, wearAs } from './pairing.js';
 import { accessoriesOverlap, COMFORT_TEMPERATURE, isOutdoorCoat, itemRegions, warmthGap, wearable } from './warmth.js';
 import { BODY_REGIONS, CATEGORIES, categoryLabel, hasBraRequirement, type Category, type PairCounts } from './types.js';
@@ -27,22 +27,12 @@ export function inferActivities(events: ClothesCalendar['events']): { scene: Sce
   }
   return { scene, active };
 }
-export function calendarDestinations(events: ClothesCalendar['events']) {
-  return [...new Set(events.flatMap((event) => {
-    if (event.location?.trim()) return [event.location.trim()];
-    const title = event.title.trim();
-    const match = title.match(/(?:前往|去往|到达|目的地[：:]|[→➜])\s*([^，,。；;（(\n]{2,40})$/)
-      ?? title.match(/^([^，,。；;（(\n]{2,20}?)(?:出差|旅行|旅游)$/);
-    return match ? [match[1].trim()] : [];
-  }))];
-}
+export { calendarDestinations } from '../boncal/destinations.js';
 export function effectiveContext(context: ClothesDayContext, calendar: ClothesCalendar | null): ClothesDayContext {
   const inferred = inferActivities(calendar?.events ?? []);
   return { ...context, scene: context.scene ?? inferred.scene, active: context.purpose === '运动' ? true : context.active ?? inferred.active };
 }
-export function chooseLocation(context: ClothesLocation | null, located: ClothesLocation | null, lastManual: ClothesLocation | null) {
-  return context && context.source !== 'geo' ? context : located ?? context ?? lastManual;
-}
+export { chooseLocation } from '../boncal/clothesContext.js';
 export function weatherFor(context: ClothesDayContext, weather: WeatherSnapshot | null): WeatherSnapshot | null {
   if (!context.manualWeather) return weather;
   const { temperature, rain } = context.manualWeather;

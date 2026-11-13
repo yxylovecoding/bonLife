@@ -19,7 +19,8 @@ import { CATEGORIES, type ClothesItem } from '../src/clothes/types';
 const { data, hashes, auth, origin, evalMock } = vi.hoisted(() => ({ data: new Map<string, any>(), hashes: new Map<string, Record<string, any>>(), auth: vi.fn(), origin: vi.fn(), evalMock: vi.fn() }));
 vi.mock('./_auth.js', () => ({ authOk: auth, sameOrigin: origin }));
 vi.mock('@vercel/kv', () => ({ kv: { get: async (key: string) => data.get(key) ?? null,
-  set: async (key: string, value: unknown) => { data.set(key, value); }, hgetall: async (key: string) => hashes.get(key) ?? null,
+  mset: async (values: Record<string, unknown>) => { for (const [key, value] of Object.entries(values)) data.set(key, value); return 'OK'; },
+  set: async (key: string, value: unknown) => { data.set(key, value); return 'OK'; }, hgetall: async (key: string) => hashes.get(key) ?? null,
   hget: vi.fn(async (key: string, field: string) => hashes.get(key)?.[field] ?? null), eval: evalMock } }));
 const uid = (v: string) => v.padEnd(20, '0');
 const context = { ...emptyContext('2026-10-05', 'Asia/Shanghai'), scene: '基本室内' as const, active: false };
@@ -58,6 +59,7 @@ beforeEach(() => {
   vi.mocked(rawKv.hget).mockClear();
   data.clear(); hashes.clear(); auth.mockResolvedValue(true); origin.mockReturnValue(true); evalMock.mockReset();
   evalMock.mockImplementation(async (_script, keys: string[], args: string[]) => {
+    if (keys.length === 1 && keys[0] === 'outlook:calendar-write:lock') { data.delete(keys[0]); return 1; }
     if (_script === READ_PHOTO) {
       const photo = data.get(keys[0]);
       if (!photo) return ['', ''];
@@ -126,7 +128,7 @@ describe('衣柜与实际穿搭接口', () => {
     auth.mockResolvedValue(false); evalMock.mockClear();
     expect((await call('GET', { view: 'photo-sizes' })).status).toBe(401);
     expect((await call('POST', {}, { action: 'compress-photo' })).status).toBe(401);
-    expect(evalMock).not.toHaveBeenCalled();
+    expect(evalMock.mock.calls.filter(([script]) => script === SAVE_CLOTHES)).toHaveLength(0);
   });
   it('压缩保持照片引用并校验来源版本、图片格式与 40KB 上限', async () => {
     const body = { action: 'compress-photo', id: item.photoId, validator: `photo-v2-${'a'.repeat(40)}`, photo: pngPhoto };
@@ -181,7 +183,7 @@ describe('衣柜与实际穿搭接口', () => {
     auth.mockResolvedValue(false); expect((await call('GET', { view: 'photo', id: item.photoId })).status).toBe(401);
     auth.mockResolvedValue(true); origin.mockReturnValue(false); expect((await call('POST', {}, {})).status).toBe(403);
     origin.mockReturnValue(true); expect((await call('PUT')).status).toBe(405);
-    expect(evalMock).not.toHaveBeenCalled();
+    expect(evalMock.mock.calls.filter(([script]) => script === SAVE_CLOTHES)).toHaveLength(0);
   });
   it('照片校验类型、字节数和真实尺寸', () => {
     expect(photoInput(jpeg())).toBe(jpeg());
@@ -312,7 +314,7 @@ describe('衣柜与实际穿搭接口', () => {
     const body = { action: 'save-context', context, mutationId: uid('mutation') };
     const first = await call('POST', {}, body); hashes.get(CONTEXTS_KEY)![context.date].scene = '有室外';
     const repeat = await call('POST', {}, body);
-    expect(repeat.status).toBe(200); expect(repeat.body.value.revision).toBe(first.body.value.revision); expect(evalMock).toHaveBeenCalledTimes(1);
+    expect(repeat.status).toBe(200); expect(repeat.body.value.revision).toBe(first.body.value.revision); expect(evalMock.mock.calls.filter(([script]) => script === SAVE_CLOTHES)).toHaveLength(1);
     expect((await call('POST', {}, { ...body, context: { ...context, active: true } })).status).toBe(400);
     expect(data.has(receiptKey(uid('mutation')))).toBe(true);
   });
@@ -411,7 +413,7 @@ describe('衣柜与实际穿搭接口', () => {
       expect((await call('POST', {}, { ...body, ...patch })).status).toBe(400);
     }
     for (const warmth of [-1, 41, '3']) expect((await call('POST', {}, { action: 'save-item', item: { ...item, warmth }, mutationId: uid('invalid-warmth') })).status).toBe(400);
-    expect(evalMock).not.toHaveBeenCalled();
+    expect(evalMock.mock.calls.filter(([script]) => script === SAVE_CLOTHES)).toHaveLength(0);
   });
   it('待洗旧数据按可穿读取及保存，保暖值可以为零或小数', async () => {
     hashes.set(ITEMS_KEY, { [item.id]: { ...item, status: '待洗' } });
@@ -432,7 +434,7 @@ describe('衣柜与实际穿搭接口', () => {
     expect(first.status).toBe(200);
     expect(first.body.value).toMatchObject({ kind: 'styled', indoor: null, outdoor: null, items: [item] });
     expect((await call('POST', {}, body)).body).toEqual(first.body);
-    expect(evalMock).toHaveBeenCalledTimes(1);
+    expect(evalMock.mock.calls.filter(([script]) => script === SAVE_CLOTHES)).toHaveLength(1);
     const worn = await call('POST', {}, { ...body, kind: undefined, recordId: uid('actually-worn'), mutationId: uid('actually-worn-save') });
     expect(worn.body.value.kind).toBe('worn');
     const loaded = await call('GET', { date: context.date });
@@ -531,7 +533,7 @@ describe('衣柜与实际穿搭接口', () => {
   it('异常输入在存储之前拒绝', async () => {
     for (const body of ['{bad', { action: 'save-context', context: { ...context, date: '2026-02-30' }, mutationId: uid('mutation') },
       { action: 'save-context', context: { ...context, timezone: 'invalid' }, mutationId: uid('mutation') }]) expect((await call('POST', {}, body)).status).toBe(400);
-    expect(evalMock).not.toHaveBeenCalled();
+    expect(evalMock.mock.calls.filter(([script]) => script === SAVE_CLOTHES)).toHaveLength(0);
   });
   it('推荐用途可保存回读，旧条件兼容且非法用途不落库', async () => {
     const result = await call('POST', {}, { action: 'save-context', context: { ...context, purpose: '休闲' }, mutationId: uid('casual-context') });
@@ -662,10 +664,10 @@ describe('出行预报与计划接口', () => {
     hashes.set(ITEMS_KEY, { [item.id]: item });
     const body = { action: 'save-trip-plan', plan, mutationId: uid('trip-save') };
     const saved = await call('POST', {}, body); expect(saved.status).toBe(200); expect(saved.body.value.location.timezone).toBe(city.timezone);
-    expect((await call('POST', {}, body)).body).toEqual(saved.body); expect(evalMock).toHaveBeenCalledTimes(1);
+    expect((await call('POST', {}, body)).body).toEqual(saved.body); expect(evalMock.mock.calls.filter(([script]) => script === SAVE_CLOTHES)).toHaveLength(1);
     expect((await call('POST', {}, { ...body, mutationId: uid('trip-conflict') })).status).toBe(409);
     expect(hashes.has(TRIP_PLANS_KEY)).toBe(true); expect(hashes.has(WEAR_KEY)).toBe(false);
-    expect(evalMock.mock.calls.every((call) => call[1].every((key: string) => !key || key.startsWith('bonclothes:')))).toBe(true);
+    expect(evalMock.mock.calls.filter(([script]) => script === SAVE_CLOTHES).every((call) => call[1].every((key: string) => !key || key.startsWith('bonclothes:')))).toBe(true);
   });
   it('不接受收起、不方便运动的单品或超出行程日期的计划', async () => {
     hashes.set(ITEMS_KEY, { [item.id]: { ...item, status: '收起' } });
@@ -676,7 +678,7 @@ describe('出行预报与计划接口', () => {
     hashes.set(ITEMS_KEY, { [item.id]: { ...item, active: false } });
     expect((await call('POST', {}, { ...body, plan: { ...plan, days: { '2026-10-05': { ...plan.days['2026-10-05'], active: true } } } })).status).toBe(400);
     expect((await call('POST', {}, { ...body, plan: { ...plan, endDate: '2026-10-04' } })).status).toBe(400);
-    expect(evalMock).not.toHaveBeenCalled();
+    expect(evalMock.mock.calls.filter(([script]) => script === SAVE_CLOTHES)).toHaveLength(0);
   });
   it('行程消失保留计划，Outlook 失败仍能读取已有出游', async () => {
     data.set('calendar-tags', { tagMap: { '2026-10-06': 'travel' } }); data.set('trip-tags', { tripTags: { '2026-10-06': '杭州' } });
@@ -685,8 +687,8 @@ describe('出行预报与计划接口', () => {
     data.set(OUTLOOK_CONNECTION_KEY, { id: 'test', encrypted: encryptOutlookConnection({ playUrl: 'https://outlook.live.com/owa/calendar/example/test.ics', classUrl: '', policy: 'manual', rules: { homeTitles: [], ignoredPlayTitles: [] } }, 'test-only-secret') });
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
     const result = await readClothesTrips('2026-10-05', 'Asia/Shanghai');
-    expect(result.calendarError).toBe('日历更新失败'); expect(result.trips.find((trip) => trip.id === plan.tripId)?.archived).toBe(true);
-    expect(result.trips.some((trip) => trip.title === '杭州')).toBe(true); expect(evalMock).not.toHaveBeenCalled();
+    expect(result.calendarError).toContain('日历更新失败'); expect(result.trips.find((trip) => trip.id === plan.tripId)?.archived).toBe(true);
+    expect(result.trips.some((trip) => trip.title === '杭州')).toBe(true); expect(evalMock.mock.calls.filter(([script]) => script === SAVE_CLOTHES)).toHaveLength(0);
     vi.unstubAllEnvs();
   });
 });

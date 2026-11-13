@@ -14,9 +14,11 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 it.each([['night-routine', 'night'], ['daily-routine', 'daily'], ['routine-visibility', 'all'], ['hair-wash', 'hair'], ['reading-visibility', 'reading'], ['timed-visibility', 'timed']])('%s 共享规则执行器，并传入原有范围', async (action, kind) => {
   expect((await request(action, 'GET', 'Bearer cron')).status).toBe(200);
-  expect(m.run).toHaveBeenCalledWith({ scope: 'visibility', visibilityKind: kind, allowDisconnected: true });
+  if (['routine-visibility', 'reading-visibility', 'hair-wash'].includes(action)) expect(m.run).not.toHaveBeenCalled();
+  else expect(m.run).toHaveBeenCalledWith({ scope: 'visibility', visibilityKind: kind, allowDisconnected: true });
   expect((await request(action, 'GET')).status).toBe(401);
   m.auth = true; expect((await request(action, 'GET')).status).toBe(405); expect((await request(action, 'POST')).status).toBe(200);
+  expect(m.run).toHaveBeenCalledWith({ scope: 'visibility', visibilityKind: kind, allowDisconnected: true });
 });
 it('繁忙返回 202；错误不会暴露 TickTick 令牌', async () => {
   m.run.mockResolvedValueOnce({ busy: true }); expect((await request('night-routine', 'GET', 'Bearer cron')).status).toBe(202);

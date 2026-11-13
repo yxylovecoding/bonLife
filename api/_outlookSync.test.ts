@@ -189,10 +189,10 @@ describe('前后台快照与旧页面上传', () => {
     await saveOutlookSnapshot(connection(), snapshot({ '2026-09-25': 'travel' }), 'manual', 1);
     data.delete(OUTLOOK_CONNECTION_KEY);
     await saveUploadedCalendarState(stale);
-    expect(calendar()).toEqual(stale);
+    expect(calendar().tagMap['2026-09-25']).toBe('travel');
     data.set(OUTLOOK_CONNECTION_KEY, { ...connection(), id: 'new-connection' });
     await saveUploadedCalendarState(stale);
-    expect(calendar()).toEqual(stale);
+    expect(calendar().tagMap['2026-09-25']).toBe('travel');
   });
   it('同时保存快照和页面上传时按顺序合并，不丢失后台日程', async () => {
     const stale = structuredClone(calendar());

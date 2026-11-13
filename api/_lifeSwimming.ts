@@ -122,7 +122,7 @@ export async function syncSwimmingSchedule(options: { lockHeld?: boolean; refres
   }
   const { runRuleReplan } = await import('./_ruleReplan.js');
   const result = await runRuleReplan({ scope: 'visibility', specialty: 'swimming', lockHeld: options.lockHeld, allowDisconnected: true })
-    .catch(() => { throw new Error('TickTick 游泳待办顺延失败，请重新同步'); });
+    .catch(error => { throw new Error('TickTick 游泳待办顺延失败，请重新同步', { cause: error }); });
   if (result.busy) throw new Error('TickTick 正在同步，游泳待办稍后重试');
   const rule = result.rules?.results.find(item => item.id === 'swimming');
   if (rule && rule.status !== 'success') throw new Error('TickTick 游泳待办顺延失败，请查看规则前序与执行状态');

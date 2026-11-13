@@ -2,10 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../utils/authClient';
 import { DEFAULT_OUTLOOK_RULES, reconcileOutlookSnapshot, type OutlookConflictPolicy, type OutlookSnapshot } from '../utils/outlookCalendar';
 import { useCalendarStore } from '../stores/calendarStore';
-import { triggerUpload } from '../utils/syncEngine';
+import { readBonCalContext } from '../boncal/client';
+import { applyBonCalResult } from '../utils/syncEngine';
 import { useSyncStatus } from '../utils/syncStatus';
 
 interface Reply {
+  revision?: string;
+  calendar?: Record<string, unknown>;
+  config?: Record<string, unknown>;
+  tripSettings?: Record<string, unknown>;
+  google?: { connected: boolean; sources: string[]; syncedAt?: string; error?: string };
   connected?: boolean;
   snapshot?: OutlookSnapshot;
   policy?: OutlookConflictPolicy;
@@ -30,6 +36,7 @@ export function useOutlookCalendarSync(yearMonth: string, enabled: boolean) {
   const [preview, setPreview] = useState<OutlookSnapshot | null>(null);
   const [message, setMessage] = useState('');
   const [syncedAt, setSyncedAt] = useState('');
+  const [google, setGoogle] = useState<Reply['google']>();
   const requestId = useRef(0);
   const controller = useRef<AbortController | null>(null);
   const lastAutomaticSync = useRef(0);
@@ -39,10 +46,9 @@ export function useOutlookCalendarSync(yearMonth: string, enabled: boolean) {
   const range = monthRange(yearMonth);
 
   const apply = (reply: Reply) => {
-    if (!reply.snapshot || !reply.policy) throw new Error('日历同步结果无效');
-    useCalendarStore.getState().applyOutlookSnapshot(reply.snapshot, reply.policy);
+    if (!reply.calendar || !reply.revision) throw new Error('日历同步结果无效');
+    applyBonCalResult({ revision: reply.revision, calendar: reply.calendar, config: reply.config, tripSettings: reply.tripSettings });
     setSyncedAt(new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }));
-    void triggerUpload();
   };
 
   async function request(method: string, body?: unknown, signal?: AbortSignal): Promise<Reply> {
@@ -75,6 +81,7 @@ export function useOutlookCalendarSync(yearMonth: string, enabled: boolean) {
         const status = await request('GET', undefined, abort.signal);
         if (!active || id !== requestId.current) return;
         setConnected(Boolean(status.connected));
+        setGoogle(status.google);
         setLoaded(true);
         setMessage('');
         if (!status.connected) {
@@ -86,7 +93,10 @@ export function useOutlookCalendarSync(yearMonth: string, enabled: boolean) {
         const reply = await request('POST', monthRange(yearMonth), abort.signal);
         if (!active || id !== requestId.current) return;
         setConnected(Boolean(reply.connected));
-        if (reply.connected) apply(reply);
+        if (reply.connected) {
+          const context = await readBonCalContext(range.startDate, range.endDate, abort.signal);
+          if (active && id === requestId.current) apply({ ...reply, revision: context.revision, calendar: context.calendar, config: context.config, tripSettings: context.tripSettings });
+        }
         lastAutomaticSync.current = Date.now();
         setMessage('');
       } catch (error) {
@@ -153,6 +163,7 @@ export function useOutlookCalendarSync(yearMonth: string, enabled: boolean) {
     .filter((day) => day.startsWith(yearMonth) && tagMap[day] !== projected[day]).sort() : [];
 
   return {
+    google,
     yearMonth, connected, loaded, busy, editing, setEditing,
     playUrl, setPlayUrl, classUrl, setClassUrl, sources, setSources, policy, setPolicy,
     preview, setPreview, message, syncedAt, projected, changes, run,

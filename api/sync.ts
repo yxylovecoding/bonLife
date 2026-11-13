@@ -1,4 +1,4 @@
-import { privateCache, privateJson } from './_privateCache.js';
+import { privateJson } from './_privateCache.js';
 import { withAccountScope } from './_accountRoute.js';
 import { isOwnerScope } from './_accountScope.js';
 import { authOk } from './_auth.js';
@@ -7,7 +7,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { MONTHLY_BACKUP_INDEX_KEY, type MonthlyBackupIndexEntry } from './_monthlyBackup.js';
 import { mergeRecoveredMonthlyInvestmentState, restoreMonthlyInvestmentState } from './_restoreMonthlyInvestment.js';
 import { SYNC_STORE_KEYS, type SyncPayload } from './_syncKeys.js';
-import { saveUploadedCalendarState } from './_outlookSync.js';
+import { BonCalConflict, readBonCalInputs, readBonCalView, repairBonCalStorage, saveBonCalUpload, withCalendarWriteLock } from './_bonCal/repository.js';
 import { migrateOwnerSchoolPeriods } from './_schoolPeriodsMigration.js';
 
 const AUGUST_INVESTMENT_RECOVERY_MARKER = 'sync-recovery:2026-08-investment:2026-09-03-v1';
@@ -74,6 +74,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (req.method === 'GET') {
+    await repairBonCalStorage();
     const values = await Promise.all(SYNC_STORE_KEYS.map((k) => kv.get(k)));
     const result: SyncPayload = {};
     let hasAny = false;
@@ -90,22 +91,24 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       result['monthly-records'] = await restoreAugustInvestmentFromLatestBackup(result['monthly-records']);
       result['monthly-records'] = await mergeAugustInvestmentFromPreRestoreState(result['monthly-records']);
     }
-    if (!hasAny) {
-      privateCache(res);
-      return res.status(204).end();
-    }
-    return privateJson(req, res, result);
+    const canonical = await readBonCalView();
+    return privateJson(req, res, { ...result, 'calendar-tags': canonical.calendar, 'trip-tags': canonical.tripSettings,
+      ...(hasAny ? { 'app-config': canonical.rawConfig } : {}), bonCalRevision: canonical.revision });
   }
 
   if (req.method === 'PUT') {
-    const body = (typeof req.body === 'string' ? JSON.parse(req.body) : req.body) as SyncPayload;
+    const body = (typeof req.body === 'string' ? JSON.parse(req.body) : req.body) as SyncPayload & { bonCalRevision?: string };
     if (!body || typeof body !== 'object') {
       return res.status(400).json({ error: 'invalid body' });
     }
-    await Promise.all(
-      SYNC_STORE_KEYS.filter((k) => k in body).map((k) => k === 'calendar-tags' ? saveUploadedCalendarState(body[k]) : kv.set(k, body[k])),
-    );
-    return res.status(200).json({ ok: true });
+    try {
+      const canonical = await saveBonCalUpload(body, typeof body.bonCalRevision === 'string' ? body.bonCalRevision : undefined);
+      await Promise.all(SYNC_STORE_KEYS.filter((k) => k in body && !['calendar-tags', 'trip-tags', 'app-config'].includes(k)).map(k => kv.set(k, body[k])));
+      return res.status(200).json({ ok: true, bonCalRevision: canonical.revision, calendar: canonical.calendar, config: canonical.config, tripSettings: canonical.tripSettings });
+    } catch (error) {
+      if (error instanceof BonCalConflict) return res.status(409).json({ error: error.message });
+      throw error;
+    }
   }
 
   return res.status(405).json({ error: 'method not allowed' });

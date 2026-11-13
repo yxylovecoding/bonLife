@@ -6,6 +6,7 @@ import { postponeSwimmingTasks, readHairWashSchedule, swimmingTarget, swimmingSy
 
 const { data } = vi.hoisted(() => ({ data: new Map<string, any>() }));
 vi.mock('@vercel/kv', () => ({ kv: {
+  mset: async (values: Record<string, unknown>) => { for (const [key, value] of Object.entries(values)) data.set(key, value); return 'OK'; },
   get: async (key: string) => data.get(key) ?? null,
   hgetall: async (key: string) => data.get(key) ?? null,
   set: async (key: string, value: unknown, options?: { nx?: boolean }) => {

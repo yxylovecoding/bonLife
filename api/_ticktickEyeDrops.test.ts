@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { syncEyeDrops } from './_ticktickEyeDrops';
 import { syncTickTickAlwaysToday, syncTickTickRoutines, type TickTickApi, type TickTickTask } from './_ticktickTrips';
 import { planTickTickDay } from './_ticktickDailyPlan';
-vi.mock('@vercel/kv', () => ({ kv: { get: async () => null } }));
+vi.mock('@vercel/kv', () => ({ kv: { get: async () => null, hgetall: async () => null, set: async () => 'OK', eval: async () => 1 } }));
 const now = new Date('2026-11-03T21:00:00+08:00');
 const task = (id: string, hour: string, extra: Partial<TickTickTask> = {}): TickTickTask => ({
   id, projectId: 'life', title: '眼药水', priority: 5, status: 0, isAllDay: false, timeZone: 'Asia/Shanghai',

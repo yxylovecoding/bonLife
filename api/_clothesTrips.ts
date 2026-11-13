@@ -1,47 +1,30 @@
+import { readBonCalContext } from './_bonCal/service.js';
+import { isNonTravelCalendarTitle } from '../src/boncal/events.js';
 import { kv } from './_accountKv.js';
-import { OUTLOOK_CONNECTION_KEY, type OutlookConnection } from './_outlookSync.js';
-import { decryptOutlookConnection, fetchCalendar, parseOutlookCalendar } from './_outlookCalendar.js';
-import { applyOutlookSnapshotToState, buildOutlookSnapshot } from '../src/utils/outlookCalendar.js';
-import { addTripDays, buildClothesTrips, tripDates } from '../src/clothes/tripRules.js';
+import { addTripDays, tripEventsOnDate, tripDates } from '../src/clothes/tripRules.js';
 import { deviceDate } from '../src/clothes/rules.js';
-import { CATEGORIES, MAX_OUTFIT_ITEMS, PURPOSES, SCENES, categoryLabel, type ClothesEvent, type ClothesLocation, type ClothesTripPlan, type ClothesTripsData, type TripForecast } from '../src/clothes/types.js';
+import { CATEGORIES, MAX_OUTFIT_ITEMS, PURPOSES, SCENES, categoryLabel, type ClothesLocation, type ClothesTripPlan, type ClothesTripsData, type TripForecast } from '../src/clothes/types.js';
 import { dateInput, id, locationInput, requireInput } from './_clothesValidation.js';
 import { readDailyWeather } from './_dailyWeather.js';
-import { resolveDestination } from './_calendarWeather.js';
-import { tripDestinationQueries } from '../src/utils/tripDestinations.js';
 
 export const TRIP_PLANS_KEY = 'bonclothes:trip-plans:v1';
 export async function readClothesTrips(today: string, timezone: string): Promise<ClothesTripsData> {
-  const [storedCalendar, settings, connection, saved] = await Promise.all([
-    kv.get<Record<string, unknown>>('calendar-tags'), kv.get<Record<string, unknown>>('trip-tags'),
-    kv.get<OutlookConnection>(OUTLOOK_CONNECTION_KEY), kv.hgetall<Record<string, ClothesTripPlan>>(TRIP_PLANS_KEY),
+  const [context, saved] = await Promise.all([
+    readBonCalContext(addTripDays(today, -30), addTripDays(today, 181), { refresh: true, repair: true }),
+    kv.hgetall<Record<string, ClothesTripPlan>>(TRIP_PLANS_KEY),
   ]);
-  let calendar = storedCalendar ?? {}, events: ClothesEvent[] = [], calendarError: string | undefined;
-  if (connection) {
-    try {
-      const input = decryptOutlookConnection(connection.encrypted, (process.env.SYNC_SECRET || '').trim());
-      const start = addTripDays(today, -30), end = addTripDays(today, 181);
-      const sources = [{ calendar: 'play' as const, url: input.playUrl }, { calendar: 'class' as const, url: input.classUrl }].filter((source) => source.url);
-      const results = (await Promise.all(sources.map(async (source) => parseOutlookCalendar(await fetchCalendar(source.url),
-        source.calendar, start, end, false, true, { includeLocation: true, timezone, includeFree: true })))).flat();
-      // Reconcile in memory only. Clothing plans never modify the ledger or calendar.
-      calendar = applyOutlookSnapshotToState(calendar, buildOutlookSnapshot(results, start, end, input.rules), input.policy, today);
-      events = results.map(({ title, location, startDate, endDate, allDay }) => ({ title, location, startDate, endDate, allDay }));
-    } catch { calendarError = '日历更新失败'; }
-  }
-  const trips = buildClothesTrips(calendar, settings ?? {}, events, today, timezone);
-  const plans = Object.values(saved ?? {}).filter((plan) => plan.endDate >= today);
-  for (const plan of plans) if (!trips.some((trip) => trip.id === plan.tripId)) {
+  const trips = context.trips.filter(trip => trip.endDate >= today && trip.startDate <= addTripDays(today, 180)).map(trip => {
+    const days = trip.dates.map(date => context.days[date]).filter(Boolean);
+    return { ...trip, events: context.events.filter(event => trip.dates.some(date => tripEventsOnDate([event], date, timezone).length)),
+      locations: [...new Map(days.flatMap(day => day.locations).map(city => [`${city.latitude}:${city.longitude}`, city])).values()],
+      unresolvedDestinations: [...new Set(days.flatMap(day => day.unresolved ?? []))] };
+  }) as import('../src/clothes/types.js').ClothesTrip[];
+  const plans = Object.values(saved ?? {}).filter(plan => plan.endDate >= today);
+  for (const plan of plans) if (!trips.some(trip => trip.id === plan.tripId) && !isNonTravelCalendarTitle(plan.title)) {
     trips.push({ id: plan.tripId, title: plan.title, startDate: plan.startDate, endDate: plan.endDate,
       dates: tripDates(plan.startDate, plan.endDate), destinations: [], events: [], archived: true });
   }
-  await Promise.all(trips.map(async (trip) => {
-    const names = tripDestinationQueries(trip.title);
-    const locations = await Promise.all(names.map((name) => resolveDestination(name).catch(() => null)));
-    trip.locations = locations.filter((city): city is ClothesLocation => !!city);
-    trip.unresolvedDestinations = names.filter((_, index) => !locations[index]);
-  }));
-  return { trips: trips.sort((a, b) => a.startDate.localeCompare(b.startDate)), plans, connected: Boolean(connection), calendarError };
+  return { trips: trips.sort((a, b) => a.startDate.localeCompare(b.startDate)), plans, connected: context.status.connected, calendarError: context.status.error };
 }
 
 export async function readTripForecast(location: ClothesLocation, start: string, end: string, timezone: string): Promise<TripForecast> {

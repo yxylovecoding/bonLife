@@ -181,7 +181,7 @@ describe('Outlook 月历映射', () => {
     });
   });
 
-  it('重新同步撤销假期的旧出游标记和标题，恢复原场景', () => {
+  it('重新同步撤销假期的旧出游贡献，恢复原场景并保留明确手动日期', () => {
     const state = {
       tagMap: { '2026-09-01': 'travel', '2026-09-02': 'travel', '2026-09-03': 'travel' },
       outlookApplied: {
@@ -194,7 +194,7 @@ describe('Outlook 月历映射', () => {
     };
     const nextSnapshot = snapshot([event({ title: '暑假', startDate: start, endDate: end })]);
     const result = applyOutlookSnapshotToState(state, nextSnapshot, 'manual');
-    expect(result.tagMap).toEqual({ '2026-09-01': 'home', '2026-09-03': 'school' });
+    expect(result.tagMap).toEqual({ '2026-09-01': 'home', '2026-09-03': 'travel' });
     expect(result.outlookApplied).toEqual({});
     expect(result.outlookTravelTitles).toEqual({});
     expect(applyOutlookSnapshotToState(result, nextSnapshot, 'manual')).toEqual(result);

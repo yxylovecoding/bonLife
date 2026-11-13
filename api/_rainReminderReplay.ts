@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readBonCalInputs } from './_bonCal/repository.js';
 import { kv } from './_accountKv.js';
 import { runAccountRequest, authorizeAccountScope } from './_accountScope.js';
 import { acquireTickTickLock, releaseTickTickLock } from './_ticktickLock.js';
@@ -53,7 +54,7 @@ export async function runRainReminderReplay(raw: string | undefined, report: (va
       const token = decryptTickTickToken(connection.encryptedToken, (process.env.SYNC_SECRET || '').trim());
       const connectionId = createHash('sha256').update(token).digest('hex');
       const api = new TickTickOpenApiClient(token, (process.env.TICKTICK_API_BASE_URL || '').trim() || undefined);
-      const [tasks, calendar, saved, config] = await Promise.all([readAllTickTickTasks(api, [0, 2]), kv.get('calendar-tags'),
+      const [tasks, calendar, saved, config] = await Promise.all([readAllTickTickTasks(api, [0, 2]), readBonCalInputs().then(value => value.calendar),
         kv.get<DailyPlanState>(DAILY_PLAN_KEY), readSchedulingRules()]);
       const now = new Date();
       const history: DailyPlanState = saved?.connectionId === connectionId ? structuredClone(saved) : { connectionId, history: [], deadlines: {} };

@@ -1,6 +1,6 @@
 import { kv } from './_accountKv.js';
 import { OUTLOOK_CONNECTION_KEY, type OutlookConnection } from './_outlookSync.js';
-import { decryptOutlookConnection, fetchCalendar, parseOutlookCalendar } from './_outlookCalendar.js';
+import { decryptOutlookConnection, readBonCalSourcesEvents } from './_outlookCalendar.js';
 import { nextCalendarDate, type OutlookDayEvent } from '../src/utils/outlookCalendar.js';
 import { trainingProjectKey, type TrainingCompletion } from '../src/utils/lifeTraining.js';
 
@@ -58,13 +58,10 @@ export async function syncCalendarTraining(now = new Date()) {
     const from = day(new Date(now.getTime() - 60 * 86_400_000));
     // Refresh the recent window so edits/cancellations are reflected, while
     // retaining older history. Publish only after every subscription succeeds.
-    const imported = (await Promise.all(input.sources.map(async source => {
-      const text = await fetchCalendar(source.url);
-      return calendarTrainingCompletions(parseOutlookCalendar(text, source.kind, from, nextCalendarDate(today), false, true,
-        { timezone: 'Asia/Shanghai', includeFree: true }), from, now);
-    }))).flat();
-    const older = previous?.connectionId === connection.id ? previous.completions.filter(item => item.date < from) : [];
-    const completions = [...new Map([...older, ...imported].map(item => [`${trainingProjectKey(item.project)}:${item.date}`, item])).values()];
+    const imported = (await readBonCalSourcesEvents(input.sources, from, nextCalendarDate(today)))
+      .map(source => ({ provider: source.provider, completions: calendarTrainingCompletions(source.events, from, now) }));
+    const older = previous?.connectionId === connection.id ? previous.completions.filter(item => item.date < from || imported.some(source => source.provider === 'google')) : [];
+    const completions = [...new Map([...older, ...imported.flatMap(source => source.completions)].map(item => [`${trainingProjectKey(item.project)}:${item.date}`, item])).values()];
     const snapshot: CalendarTrainingSnapshot = { connectionId: connection.id, requestedAt, syncedAt: now.toISOString(), completions };
     // Reuse the supported save-periods transaction: connection + snapshot CAS.
     const stored = await kv.eval<(string | number)[], number>(`

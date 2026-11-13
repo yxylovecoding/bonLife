@@ -179,7 +179,7 @@ describe('Turso storage contract', () => {
   });
   it('has an exact reviewed port for every existing Lua script and rejects unknown scripts', () => {
     const found = new Set<string>();
-    for (const name of readdirSync(new URL('.', import.meta.url)).filter(name => name.endsWith('.ts') && !name.endsWith('.test.ts'))) {
+    for (const name of readdirSync(new URL('.', import.meta.url), { recursive: true }).map(String).filter(name => name.endsWith('.ts') && !name.endsWith('.test.ts'))) {
       const file = ts.createSourceFile(name, readFileSync(new URL(name, import.meta.url), 'utf8'), ts.ScriptTarget.Latest);
       const visit = (node: ts.Node) => {
         if (ts.isStringLiteralLike(node) && node.text.includes('redis.call(')) {
@@ -189,7 +189,9 @@ describe('Turso storage contract', () => {
       };
       visit(file);
     }
-    expect(found.size).toBe(Object.keys(STORAGE_SCRIPT_IDS).length);
+    // Retain the retired email-lock port for old stored jobs; daily email is disabled.
+    const active = new Set([...found].map(script => storageOperation(script)));
+    expect(Object.values(STORAGE_SCRIPT_IDS).filter(operation => !active.has(operation))).toEqual(['release-email']);
     expect(() => kv.eval('return 1', [], [])).toThrow('Unsupported');
   });
 });

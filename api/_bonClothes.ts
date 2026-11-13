@@ -2,8 +2,7 @@ import { kv } from './_accountKv.js';
 import { upstream } from './_weatherClient.js';
 export { upstream } from './_weatherClient.js';
 import { createHash } from 'node:crypto';
-import { decryptOutlookConnection, fetchCalendar, parseOutlookCalendar } from './_outlookCalendar.js';
-import { OUTLOOK_CONNECTION_KEY, type OutlookConnection } from './_outlookSync.js';
+import { readBonCalEvents } from './_bonCal/service.js';
 import { deviceDate } from '../src/clothes/rules.js';
 import { nextCalendarDate } from '../src/utils/outlookCalendar.js';
 import type { ClothesCalendar, ClothesLocation, DayPeriod, WeatherSnapshot } from '../src/clothes/types.js';
@@ -102,17 +101,10 @@ export async function readClothesCalendar(date: string, timezone: string): Promi
   const archiveKey = `bonclothes:calendar-history:v1:${date}:${timezone}`;
   const saved = await kv.get<ClothesCalendar>(archiveKey);
   if (date < deviceDate(new Date(), timezone) && saved) return saved;
-  const connection = await kv.get<OutlookConnection>(OUTLOOK_CONNECTION_KEY);
-  if (!connection) return { connected: false, events: [], fetchedAt: new Date().toISOString() };
-  const input = decryptOutlookConnection(connection.encrypted, (process.env.SYNC_SECRET || '').trim());
   try {
-    const sources = [{ calendar: 'play' as const, url: input.playUrl }, { calendar: 'class' as const, url: input.classUrl }].filter((source) => source.url);
-    const results = await Promise.all(sources.map(async (source) => parseOutlookCalendar(await fetchCalendar(source.url),
-      source.calendar, date, nextCalendarDate(date), false, true, { includeLocation: true, timezone, includeFree: true })));
-    const value = { connected: true, fetchedAt: new Date().toISOString(), events: results.flat()
-      .map(({ title, location, startDate, endDate, allDay }) => ({ title, location, startDate, endDate, allDay }))
-      .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.title.localeCompare(b.title)) };
-    if (date <= deviceDate(new Date(), timezone)) await kv.set(archiveKey, value);
+    const result = await readBonCalEvents(date, nextCalendarDate(date), timezone, ['玩', '课']);
+    const value = { ...result, events: result.events.sort((a, b) => a.startDate.localeCompare(b.startDate) || a.title.localeCompare(b.title)) };
+    if (date <= deviceDate(new Date(), timezone) && result.connected) await kv.set(archiveKey, value);
     return value;
   } catch { throw new Error('日历更新失败'); }
 }

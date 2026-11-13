@@ -1,4 +1,5 @@
 import { tagMeta } from '../data/mockData';
+import GoogleCalendarControl from './GoogleCalendarControl';
 import type { useOutlookCalendarSync } from '../hooks/useOutlookCalendarSync';
 import type { OutlookConflictPolicy } from '../utils/outlookCalendar';
 
@@ -73,6 +74,7 @@ export default function OutlookCalendarSyncControl({ sync }: { sync: ReturnType<
         </form>
       )}
       {message && <div role="alert" style={{ marginTop: 6, fontSize: 11, color: '#ea4335' }}>{message}</div>}
+      {connected && <GoogleCalendarControl />}
     </div>
   );
 }

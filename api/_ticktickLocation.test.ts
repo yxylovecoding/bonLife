@@ -11,6 +11,8 @@ import { routineTaskDate, separateTickTickSprays, syncTickTickAlwaysToday, syncT
 const { data } = vi.hoisted(() => ({ data: new Map<string, unknown>() }));
 vi.mock('@vercel/kv', () => ({ kv: {
   get: async (key: string) => structuredClone(data.get(key) ?? null),
+  hgetall: async (key: string) => structuredClone(data.get(key) ?? null),
+  eval: async (_script: string, [key]: string[]) => { data.delete(key); return 1; },
   set: async (key: string, value: unknown) => { data.set(key, structuredClone(value)); return 'OK'; },
 } }));
 const today = '2026-10-28', tomorrow = '2026-10-29', later = '2026-10-30';

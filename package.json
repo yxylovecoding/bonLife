@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "prebuild": "node scripts/check-api-functions.mjs && node scripts/check-api-imports.mjs",
+    "prebuild": "node scripts/check-api-functions.mjs && node scripts/check-api-imports.mjs && node scripts/check-boncal-boundary.mjs",
     "build": "tsc -b && vite build",
     "build:deploy": "npm run build && node scripts/build-server.mjs",
     "start": "node dist-server/index.js",

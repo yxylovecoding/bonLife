@@ -1,3 +1,5 @@
+import { readBonCalInputs, readBonCalView, repairBonCalStorage } from './_bonCal/repository.js';
+import { readBonCalSchedulingState } from './_bonCal/service.js';
 import { abandonedTodayTaskIds, readAbandonedTaskRecords, readAbandonedTodayTaskIds } from './_ticktickAbandoned.js';
 import { schedulingStage } from './_schedulingFailure.js';
 import { createHash } from 'node:crypto';
@@ -61,6 +63,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
     hasRunTrace = true;
   };
   try {
+    await repairBonCalStorage();
     const config = await readSchedulingRules(); activeConfig = config;
     return await withRulePolicy(config, async () => {
       const connection = await kv.get<TickTickConnection>('ticktick:connection:v1');
@@ -92,12 +95,13 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       let trainingDates = new Map<string, string>();
       let trainingRevealIds: string[] | undefined;
       const api = new TickTickOpenApiClient(token, (process.env.TICKTICK_API_BASE_URL || '').trim() || undefined);
-      const [tasks, configState, storedCalendar, tripState, storedTrips, settings, saved, locationTags] = await Promise.all([
-        schedulingStage('tasks-read', true, () => readAllTickTickTasks(api, options.scope === 'visibility' ? [0] : [0, 2])), kv.get('app-config'), kv.get('calendar-tags'), kv.get('trip-tags'),
+      const [tasks, bonCalInput, storedTrips, settings, saved, locationTags] = await Promise.all([
+        schedulingStage('tasks-read', true, () => readAllTickTickTasks(api, options.scope === 'visibility' ? [0] : [0, 2])), readBonCalView(),
         kv.get<TickTickTripSyncState>('ticktick:trip-sync:v1'),
         kv.get<{ budgetMinutes?: number | null; availabilityProfile?: string }>(DAILY_PLAN_SETTINGS_KEY), kv.get<DailyPlanState>(DAILY_PLAN_KEY),
         readTickTickLocationTags(api),
       ]);
+      const { rawConfig: configState, calendar: storedCalendar, tripSettings: tripState } = bonCalInput;
       let calendarState = resolveCalendarState(configState, storedCalendar);
       let availability: OutlookAvailability | undefined, calendarError = false, calendarCheckedAt = now.toISOString();
       let calendarEvidence: import('../src/utils/outlookCalendar.js').OutlookSnapshot | undefined;
@@ -109,7 +113,9 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             if (outlook) {
               const input = decryptOutlookConnection(outlook.encrypted, secret);
               const end = new Date(Date.parse(`${today}T00:00:00Z`) + 31 * 86400000).toISOString().slice(0, 10);
+              const requestedAt = Date.now();
               const snapshot = await readOutlookSnapshot(input, today, end, { startDate: today, endDate: end }, connection.timeZone);
+              outlookSnapshot = { connected: true, connection: outlook, snapshot, policy: input.policy, requestedAt, availability: snapshot.availability, ...(snapshot.provider ? { provider: snapshot.provider } : {}) };
               calendarEvidence = snapshot; availability = snapshot.availability;
               calendarState = resolveCalendarState(configState, applyOutlookSnapshotToState((storedCalendar ?? {}) as Record<string, unknown>, snapshot, input.policy, today));
             }
@@ -131,6 +137,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           || calendarDateInTimeZone(status.syncedAt, 'Asia/Shanghai') !== today));
         if (status?.syncedAt) calendarCheckedAt = status.syncedAt;
       }
+      try { calendarState = await readBonCalSchedulingState(calendarState, configState, today, bonCalInput); } catch { calendarError = true; }
       if (locationTags !== undefined) calendarState = { ...calendarState, locationTags };
       const maintainsDates = options.scope !== 'visibility' || ['daily', 'all', 'night'].includes(options.visibilityKind ?? '');
       const runsRainReminder = options.scope !== 'visibility' && !options.specialty && !config.removed?.includes('rain-reminder');
@@ -637,6 +644,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       }
       // Validate/publish the calendar before committing tasks. A later subscription
       // refresh must not erase the trace of task writes already confirmed below.
+      if ((await readBonCalInputs()).revision !== bonCalInput.revision) throw new Error('日历已更新，请重新运行 Orchestrate');
       if (outlookSnapshot?.connected && ['calendar-travel', 'calendar-home', 'calendar-intern', 'calendar-manual'].every(id => allowed(id as SchedulingRuleId))) {
         try {
           await saveOutlookSnapshot(outlookSnapshot.connection, outlookSnapshot.snapshot, outlookSnapshot.policy, outlookSnapshot.requestedAt);

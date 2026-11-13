@@ -4,8 +4,8 @@ import { dailyWeatherLabel, weatherSymbol } from '../utils/weather';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ClothesCalendar, ClothesDayContext, ClothesItem, ClothesLocation, Outfit, PairCounts, WearRecord, WeatherSnapshot } from './types';
 import { SCENES, PURPOSES, PURPOSE_LABELS, wearId, type Purpose, type Category, categoryLabel } from './types';
-import { calendarDestinations, chooseLocation, deviceDate, effectiveContext, eligibleItems, recommend, replacements, weatherFor } from './rules';
-import { ClothesError, clothesRequest, readLocal, writeLocal } from './client';
+import { calendarDestinations, deviceDate, effectiveContext, eligibleItems, recommend, replacements, weatherFor } from './rules';
+import { ClothesError, clothesRequest } from './client';
 import ItemPhoto from './ItemPhoto';
 import CityPicker from './CityPicker';
 import { createWearDraft, type WearDraft } from './WearEditor';
@@ -31,21 +31,16 @@ export default function Today({ calendarLocation, owner, items, initial, records
   const future = initial.date > deviceDate(new Date(), initial.timezone);
   const datedHeading = past || (future && !tomorrow);
   const storageKey = `bonclothes:context-draft:${owner}:${initial.date}`;
-  const lastCityKey = `bonclothes:last-city:${owner}`;
-  const preferenceKey = `bonclothes:location-choice:${owner}`;
   const preferred = useMemo(() => {
-    const choice = readLocal<ClothesLocation | null>(preferenceKey, null);
-    const context = !calendarLocation?.travel && !past && !initial.location && choice && choice.source !== 'geo' ? { ...initial, location: choice } : initial;
+    const context = initial;
     const location = context.location;
     const beijing = location && (location.name.includes('北京') || (location.latitude >= 39.4 && location.latitude <= 41.1 && location.longitude >= 115.4 && location.longitude <= 117.6));
     return !past && context.indoorTemperature === undefined && beijing ? { ...context, indoorTemperature: 25 } : context;
-  }, [initial, preferenceKey, past, calendarLocation?.travel]);
+  }, [initial, past]);
   const sync = useContextAutosave(storageKey, preferred);
   const { context, queue } = sync;
   const [calendar, setCalendar] = useState<ClothesCalendar | null>(null), [calendarError, setCalendarError] = useState('');
   const [calendarBusy, setCalendarBusy] = useState(false);
-  const [located, setLocated] = useState<ClothesLocation | null>(null);
-  const [lastCity, setLastCity] = useState(() => readLocal<ClothesLocation | null>(lastCityKey, null));
   const [geoError, setGeoError] = useState(''), [geoBusy, setGeoBusy] = useState(false);
   const [cityQuery, setCityQuery] = useState<string | null>(null);
   const [weatherState, setWeatherState] = useState<WeatherResult>({ weather: null, stale: false });
@@ -58,7 +53,7 @@ export default function Today({ calendarLocation, owner, items, initial, records
   const linked = useMemo(() => linkedClothesContext(context, calendarLocation), [context, calendarLocation]);
   const contextRef = useRef(linked); contextRef.current = linked;
   const todayRecords = [...records, ...outfits].filter((record) => record.date === initial.date).sort((a, b) => (a.time ?? '').localeCompare(b.time ?? '') || a.confirmedAt.localeCompare(b.confirmedAt));
-  const location = chooseLocation(linked.location, located, past || calendarLocation?.travel ? null : lastCity);
+  const location = linked.location;
   const effective = useMemo(() => ({ ...effectiveContext(linked, calendar), location, timezone: location?.timezone ?? linked.timezone }), [linked, calendar, location]);
   const weather = weatherState.weather;
   const pairs = useMemo(() => pairCounts ?? outfitPairCounts([...records, ...outfits]), [pairCounts, records, outfits]);
@@ -95,8 +90,7 @@ export default function Today({ calendarLocation, owner, items, initial, records
     navigator.geolocation.getCurrentPosition(({ coords }) => {
       if (token !== geoRequest.current) return;
       const found: ClothesLocation = { name: '当前位置', latitude: coords.latitude, longitude: coords.longitude, source: 'geo' };
-      if (explicit) writeLocal(preferenceKey, found);
-      setLocated(found); setGeoBusy(false);
+      setGeoBusy(false);
       if (explicit || !contextRef.current.location || contextRef.current.location.source === 'geo') {
         // Automatic refresh never takes priority over a manual selection made while GPS was pending.
         if (!explicit && contextRef.current.location && contextRef.current.location.source !== 'geo') return;
@@ -105,14 +99,13 @@ export default function Today({ calendarLocation, owner, items, initial, records
     }, () => {
       if (token !== geoRequest.current) return;
       setGeoBusy(false); setGeoError('定位失败，请选择城市');
-      setLocated(null);
       if (contextRef.current.location?.source === 'geo') {
         queue.change({ location: null });
       }
     }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
-  }, [queue, preferenceKey]);
+  }, [queue]);
   useEffect(() => {
-    if (past || calendarLocation?.travel) return;
+    if (past || future || calendarLocation?.travel) return;
     let active = true;
     let attempted = false;
     const auto = async () => {
@@ -125,7 +118,7 @@ export default function Today({ calendarLocation, owner, items, initial, records
     };
     void auto(); window.addEventListener('focus', auto);
     return () => { active = false; geoRequest.current++; window.removeEventListener('focus', auto); };
-  }, [locate, past, calendarLocation?.travel]);
+  }, [locate, past, future, calendarLocation?.travel]);
   useEffect(() => {
     if (!location) { setWeatherState({ weather: null, stale: false }); return; }
     const abort = new AbortController(); let active = true;
@@ -169,8 +162,8 @@ export default function Today({ calendarLocation, owner, items, initial, records
   }
   const destinations = calendarDestinations(calendar?.events ?? []);
   const selectCity = (city: ClothesLocation) => {
-    geoRequest.current++; setGeoBusy(false); setGeoError(''); setCityQuery(null); setLastCity(city); writeLocal(lastCityKey, city);
-    writeLocal(preferenceKey, city); changeContext({ location: { ...city, source: 'manual' }, timezone: city.timezone ?? context.timezone });
+    geoRequest.current++; setGeoBusy(false); setGeoError(''); setCityQuery(null);
+    changeContext({ location: { ...city, source: 'manual' }, timezone: city.timezone ?? context.timezone });
   };
   const replaceItem = outfit?.items.find((item) => item.id === replace);
   return <>
@@ -184,7 +177,7 @@ export default function Today({ calendarLocation, owner, items, initial, records
     </section>
     <section className="clothes-context" aria-label="当天条件">
       <div className="clothes-row"><div className="clothes-location"><span className="clothes-label">地点</span><button onClick={() => setCityQuery('')}>{location?.name ?? '选择城市'} <span aria-hidden="true">⌄</span></button></div>
-        {!past && <button className="clothes-link" disabled={geoBusy || busy} onClick={() => locate(true)}>{geoBusy ? '定位中…' : '定位'}</button>}</div>
+        {!past && !future && <button className="clothes-link" disabled={geoBusy || busy} onClick={() => locate(true)}>{geoBusy ? '定位中…' : '定位'}</button>}</div>
       {(calendarLocation?.locations.length ?? 0) > 1 && <div className="clothes-destinations"><span className="clothes-label">出游目的地</span>{calendarLocation!.locations.map((city) => <button key={`${city.latitude}:${city.longitude}`} onClick={() => selectCity(city)}>{city.name}</button>)}</div>}
       {geoError && <p className="clothes-status" role="status">{geoError}</p>}
       {destinations.length > 0 && <div className="clothes-destinations"><span className="clothes-label">日程地点</span>{destinations.map((destination) => <button key={destination} onClick={() => setCityQuery(destination)}>{destination}</button>)}</div>}

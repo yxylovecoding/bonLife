@@ -1,3 +1,4 @@
+import { repairReminderWishes } from '../boncal/repair.js';
 import { wishTripStarts, wishBillTags } from './wishAssociations';
 import { wishRequiredIncome } from './wishRaiseSavings';
 import type { TagKind, WishExtraExpenseItem, WishItem } from '../models/types';
@@ -267,7 +268,7 @@ export function reconcileTripWishes(
   };
   const eligibleTrips = trips.filter((trip) => !dismissedStarts[trip.startDate]);
   const eligibleStarts = new Set(eligibleTrips.map((trip) => trip.startDate));
-  const retainedWishes = wishes.filter((wish) => {
+  const retainedWishes = repairReminderWishes(wishes).filter((wish) => {
     const synthetic = /^wish_trip_\d{4}-\d{2}-\d{2}(?:_\d+)?$/.test(wish.id);
     const untouched = wish.targetAmount === 0 && wish.savedAmount === 0 && wish.plannedTravelDays === 0
       && !wish.repaidAmount && !(wish.spentItems?.length) && wish.deadlineMode !== 'manual' && wish.billTag === undefined;

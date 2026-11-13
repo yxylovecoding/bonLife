@@ -14,6 +14,7 @@ import { itemCategories, wearAs, outfitPairCounts } from '../src/clothes/pairing
 import { calibratedItems } from '../src/clothes/thermalLearning.js';
 import { itemWarmth, normalizeItem, wearable } from '../src/clothes/warmth.js';
 import { TRIP_PLANS_KEY, readClothesTrips, readTripForecast, tripPlanInput } from './_clothesTrips.js';
+import { saveBonCalLocationRecord } from './_bonCal/repository.js';
 import { readCalendarLocations, readCalendarWeather } from './_calendarWeather.js';
 import { readDailyWeather } from './_dailyWeather.js';
 import { deviceDate, totalWearCounts } from '../src/clothes/rules.js';
@@ -231,9 +232,10 @@ async function handler(req: VercelRequest, res: VercelResponse) {
         ...(body.indoorCoat !== undefined || previous?.indoorCoat !== undefined ? { indoorCoat: body.indoorCoat ?? previous?.indoorCoat } : {}) } : {}), date: context.date, revision: mutationId, confirmedAt: previous?.confirmedAt ?? new Date().toISOString(), items, context, weather };
     } else throw new ClothesInputError('操作无效');
     if (photo && r2Enabled()) photo = JSON.stringify(await storeR2Photo(photo));
-    const [ok, raw] = await kv.eval<string[], [number, string | unknown]>(SAVE_CLOTHES,
+    const write = () => kv.eval<string[], [number, string | unknown]>(SAVE_CLOTHES,
       [key, receiptKey(mutationId), ITEMS_KEY, photoStorage],
       [field, expected, mutationId, JSON.stringify(value), photo, JSON.stringify(checks), sig]);
+    const [ok, raw] = await (key === CONTEXTS_KEY || key === TRIP_PLANS_KEY ? saveBonCalLocationRecord(write) : write());
     const stored = typeof raw === 'string' ? (raw ? JSON.parse(raw) : null) : raw;
     if (ok === -3) throw new ClothesInputError('请重新提交本次修改');
     if (ok === -1) throw new ClothesInputError('照片不存在，请重新上传');

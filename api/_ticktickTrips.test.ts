@@ -2418,7 +2418,7 @@ describe('TickTick 出游同步', () => {
       outlookTravelTitles: Object.fromEntries(dates.map((day, index) => [day, index < 2 ? '北海道、寒假' : '寒假'])),
     };
     const options = { api, template, state, today: '2026-09-25', saveState: async () => undefined };
-    await reconcileTickTickTrips({ ...options, trips: buildTripSourcesFromSyncState(oldCalendar, {}) });
+    await reconcileTickTickTrips({ ...options, trips: dates.map(date => ({ key: date, startDate: date, endDate: date, dates: [date], name: oldCalendar.outlookTravelTitles[date], note: '' })) });
     const originalIds = Object.fromEntries(dates.map((day) => [day, { ...state.instances[day].taskIdsByTemplateId }]));
     const completedId = originalIds[dates[0]]['template-before'];
     api.tasks.get(completedId)!.status = 2;
@@ -2490,4 +2490,26 @@ describe('TickTick 出游同步', () => {
     expect(api.tasks.has(removedGeneratedId)).toBe(false);
     expect(api.tasks.get('manual-child')?.parentId).toBe(instance.rootTaskId);
   });
+  it.each(['untouched', 'completed', 'edited', 'extra-child'] as const)('生日旧实例按保存 ID 修复，保护 %s', async protection => {
+    const api = new FakeTickTickApi(), template = await discoverTickTickTemplate(api);
+    const state: TickTickTripSyncState = { instances: {} };
+    const trip = { key: '2027-03-01', startDate: '2027-03-01', endDate: '2027-03-01', dates: ['2027-03-01'], name: '生日🎂', note: '' };
+    const options = { api, template, state, today: '2026-11-13', saveState: async () => undefined };
+    await reconcileTickTickTrips({ ...options, trips: [trip] });
+    const instance = structuredClone(state.instances[trip.key]);
+    const root = api.tasks.get(instance.rootTaskId!)!;
+    if (protection === 'completed') root.status = 2;
+    if (protection === 'edited') root.content = '用户手记';
+    if (protection === 'extra-child') api.tasks.set('personal-child', { id: 'personal-child', projectId: root.projectId, parentId: root.id, title: '用户增加', status: 0 });
+    api.tasks.set('real-birthday', { id: 'real-birthday', projectId: root.projectId, title: '生日', status: 0 });
+    await reconcileTickTickTrips({ ...options, trips: [] });
+    expect(state.instances[trip.key]).toBeUndefined();
+    expect(api.tasks.has('real-birthday')).toBe(true);
+    for (const id of Object.values(instance.taskIdsByTemplateId)) expect(api.tasks.has(id)).toBe(protection !== 'untouched');
+    if (protection !== 'untouched') expect(state.retiredReminderInstances?.[trip.key]).toEqual(instance);
+    const writes = [api.deleteCalls, api.updateCalls];
+    await reconcileTickTickTrips({ ...options, trips: [] });
+    expect([api.deleteCalls, api.updateCalls]).toEqual(writes);
+  });
+
 });

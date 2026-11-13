@@ -63,6 +63,7 @@ export function normalizeConfirmedExpenses(input: unknown): Record<string, Confi
 
 interface CalendarStore {
   tagMap: TagMap;
+  holidayDataByYear: import('../utils/holidays').HolidayDataByYear;
   dayOverrides: DayOverrides;
   setDayOverride: (date: string, value: DayOverride) => void;
   outlookApplied: OutlookAppliedDays;
@@ -93,6 +94,7 @@ export const useCalendarStore = create<CalendarStore>()(
   persist(
     (set, get) => ({
       tagMap: {},
+      holidayDataByYear: {},
       dayOverrides: {},
       setDayOverride: (date, value) => set(s => ({ dayOverrides: normalizeDayOverrides({ ...s.dayOverrides, [date]: value }) })),
       outlookApplied: {},

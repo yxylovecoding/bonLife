@@ -1,8 +1,7 @@
-import ICAL from 'ical.js';
+import { calendarReadAdvice } from './_bonCal/provider.js';
 import { kv } from './_accountKv.js';
-import { fetchCalendar, parseOutlookCalendar, decryptOutlookConnection, calendarReadFailure, calendarReadAdvice } from './_outlookCalendar.js';
+import { readBonCalPeriods, parsePeriodCalendar } from './_bonCal/periods.js';
 import { periodDays, reconcilePeriodEvents, type PeriodEvent } from '../src/utils/bonLife.js';
-import { isPeriodCalendarTitle, type OutlookDayEvent } from '../src/utils/outlookCalendar.js';
 
 export const LIFE_CONNECTION_KEY = 'bonlife:outlook-connection:v1';
 export interface LifeConnection { id: string; encrypted: string }
@@ -22,62 +21,13 @@ export async function readPeriodDays(year: number) {
   return [...new Set(years.flatMap((value) => periodDays(events, value)))].sort();
 }
 
-export function parsePeriodCalendar(text: string, year: number) {
-  const events = parseOutlookCalendar(text, 'calendar', `${year - 1}-11-01`, `${year + 1}-01-01`, true, true,
-    { timezone: 'Asia/Shanghai', includeFree: true });
-  const root = new ICAL.Component(ICAL.parse(text));
-  const seenUids = root.getAllSubcomponents('vevent').map((event) => String(event.getFirstPropertyValue('uid') || '')).filter(Boolean);
-  return periodEvents(events, seenUids);
-}
-
-function periodEvents(events: OutlookDayEvent[], seenUids: string[]) {
-  const localDay = (instant: number) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date(instant));
-  return { seenUids, events: events.filter((event) => isPeriodCalendarTitle(event.title)).map((event) => {
-    if (!event.uid) throw new Error('日程标识缺失');
-    if (event.allDay) return { uid: event.uid, startDate: event.startDate, endDate: event.endDate };
-    // Store every Shanghai date touched by a timed event using the same
-    // exclusive-end convention as all-day records. Midnight is not an extra day.
-    const startDate = localDay(Date.parse(event.startDate));
-    const lastDate = localDay(Date.parse(event.endDate) - 1);
-    const endDate = new Date(Date.parse(`${lastDate}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
-    return { uid: event.uid, startDate, endDate };
-  }) };
-}
-
-async function readPeriodCalendarText(connection: LifeConnection) {
-  try {
-    const input = decryptOutlookConnection(connection.encrypted, (process.env.SYNC_SECRET || '').trim());
-    return await fetchCalendar(input.playUrl);
-  } catch (error) {
-    console.warn('[outlook-period-read-failure]', JSON.stringify(calendarReadFailure(error)));
-    const message = `Outlook 日历读取失败，${calendarReadAdvice(error)}`;
+export { parsePeriodCalendar } from './_bonCal/periods.js';
+export async function readPeriodCalendar(connection: LifeConnection, year: number) {
+  try { return (await readBonCalPeriods(connection, [year]))[0]; }
+  catch (error) {
+    const message = `Outlook 日历读取失败，${calendarReadAdvice(error instanceof Error ? error.cause ?? error : error)}`;
     await kv.set('bonlife:period-read-status:v1', { connectionId: connection.id, error: message });
     throw new Error(message);
-  }
-}
-
-export async function readPeriodCalendar(connection: LifeConnection, year: number) {
-  try { return (await readPeriodWindows(connection, [year]))[0]; }
-  catch (error) {
-    if (error instanceof Error && error.message.startsWith('Outlook 日历读取失败')) throw error;
-    throw new Error(`Outlook 日历读取失败，${calendarReadAdvice(error)}`);
-  }
-}
-
-async function readPeriodWindows(connection: LifeConnection, years: number[]) {
-  try {
-    const text = await readPeriodCalendarText(connection);
-    return years.map(year => parsePeriodCalendar(text, year));
-  } catch (error) {
-    const input = decryptOutlookConnection(connection.encrypted, (process.env.SYNC_SECRET || '').trim());
-    const { readGoogleCalendarSources } = await import('./_googleCalendar.js');
-    const backup = await readGoogleCalendarSources([{ name: '日历', url: input.playUrl, kind: 'calendar' }],
-      `${Math.min(...years) - 1}-11-01`, `${Math.max(...years) + 1}-01-01`).catch(() => null);
-    if (!backup) throw error;
-    const events = backup[0].events;
-    const seenUids = [...new Set(events.map(event => event.uid).filter((uid): uid is string => Boolean(uid)))];
-    return years.map(year => periodEvents(events.filter(event => event.startDate.slice(0, 10) < `${year + 1}-01-01`
-      && event.endDate.slice(0, 10) >= `${year - 1}-11-01`), seenUids));
   }
 }
 
@@ -89,12 +39,13 @@ export async function syncLifePeriods(connection: LifeConnection, year: number) 
   return saveLifePeriods(connection, year, parsed, previous, requestedAt);
 }
 
-async function saveLifePeriods(connection: LifeConnection, year: number, parsed: ReturnType<typeof parsePeriodCalendar>,
+async function saveLifePeriods(connection: LifeConnection, year: number, parsed: ReturnType<typeof parsePeriodCalendar> & { provider?: string },
   previous: PeriodSnapshot | null, requestedAt: number) {
   if (previous && previous.requestedAt > requestedAt) throw new Error('日历连接或内容已更新，请重新同步');
   const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date());
   const snapshot: PeriodSnapshot = { connectionId: connection.id, requestedAt, syncedAt: new Date().toISOString(),
-    events: reconcilePeriodEvents(previous?.events ?? [], parsed.events, parsed.seenUids, today) };
+    events: parsed.provider === 'google' ? [...(previous?.events ?? []).filter(event => !parsed.seenUids.includes(event.uid)), ...parsed.events]
+      : reconcilePeriodEvents(previous?.events ?? [], parsed.events, parsed.seenUids, today) };
   const result = await kv.eval<(string | number)[], number>(`
     local connection = redis.call('get', KEYS[1])
     if not connection or cjson.decode(connection).id ~= ARGV[1] then return 0 end
@@ -118,7 +69,7 @@ export async function syncRecentLifePeriods(now = new Date()) {
     const years = [year - 1, year, year + 1].filter((value) => value >= 1900 && value <= 2200);
     const requestedAt = Date.now();
     const [parsed, previous] = await Promise.all([
-      readPeriodWindows(connection, years), Promise.all(years.map((value) => kv.get<PeriodSnapshot>(periodsKey(value)))),
+      readBonCalPeriods(connection, years), Promise.all(years.map((value) => kv.get<PeriodSnapshot>(periodsKey(value)))),
     ]);
     // Fetch once and validate every window before writing any snapshots. Previous-year
     // storage preserves late edits in January; next-year storage covers December crossings.

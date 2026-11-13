@@ -1,3 +1,5 @@
+import { bonCalTrips } from '../src/boncal/trips.js';
+import { cleanTravelTitle } from '../src/boncal/events.js';
 import { dateTimeFormatter } from './_dateTimeFormat.js';
 import { canAdvanceEyeDrop, eyeDropShanghaiDay, isEyeDrops } from './_ticktickEyeDrops.js';
 import { currentRule, precedes } from './_rulePolicy.js';
@@ -8,7 +10,6 @@ import { createCipheriv, createDecipheriv, createHash, createSecretKey, randomBy
 import { Lunar } from 'lunar-typescript';
 import ICAL from 'ical.js';
 import { withoutDurationAnnotations } from './_taskDuration.js';
-import { getTripDisplayTitle, normalizeOutlookTravelTitles } from '../src/utils/outlookCalendar.js';
 import { createTaskLocationDateFinder, hasTaskLocation, nextTaskLocationDate, taskCityTags, taskLocationAllowed, taskSceneTags } from './_ticktickLocation.js';
 import { readTickTickLocationTags } from './_ticktickLocationTags.js';
 
@@ -151,6 +152,7 @@ export interface TickTickTripInstance {
 
 export interface TickTickTripSyncState {
   instances: Record<string, TickTickTripInstance>;
+  retiredReminderInstances?: Record<string, TickTickTripInstance>;
   wishInstances?: Record<string, TickTickTripInstance>;
   lastSyncAt?: string;
   lastError?: string;
@@ -463,53 +465,24 @@ export async function readConnectedTickTickTemplate(
 }
 
 export function buildTripSourcesFromSyncState(calendarState: unknown, tripState: unknown): TickTickTripSource[] {
-  const calendar = calendarState && typeof calendarState === 'object' ? calendarState as Record<string, unknown> : {};
-  const trip = tripState && typeof tripState === 'object' ? tripState as Record<string, unknown> : {};
-  const tagMap = calendar.tagMap && typeof calendar.tagMap === 'object'
-    ? calendar.tagMap as Record<string, unknown>
-    : {};
-  const tripTags = trip.tripTags && typeof trip.tripTags === 'object' ? trip.tripTags as Record<string, string> : {};
-  const tripNotes = trip.tripNotes && typeof trip.tripNotes === 'object' ? trip.tripNotes as Record<string, string> : {};
-  const tripSplits = trip.tripSplits && typeof trip.tripSplits === 'object' ? trip.tripSplits as Record<string, true> : {};
-  const outlookTravelTitles = normalizeOutlookTravelTitles(calendar.outlookTravelTitles);
-  const travelDates = Object.entries(tagMap)
-    .filter(([, tag]) => tag === 'travel')
-    .map(([date]) => date)
-    .sort();
-  const splitDates = new Set(Object.keys(tripSplits));
-  const segments: string[][] = [];
-  let current: string[] = [];
-  for (const date of travelDates) {
-    const previous = current.at(-1);
-    const previousDay = previous ? new Date(`${previous}T00:00:00Z`) : null;
-    if (previousDay) previousDay.setUTCDate(previousDay.getUTCDate() + 1);
-    const contiguous = previousDay?.toISOString().slice(0, 10) === date;
-    if (!previous || (contiguous && !splitDates.has(date))) {
-      current.push(date);
-      continue;
-    }
-    segments.push(current);
-    current = [date];
-  }
-  if (current.length > 0) segments.push(current);
-
+  const trips = bonCalTrips(calendarState, tripState);
   const formatShortDate = (date: string) => {
     const [, month, day] = date.split('-');
     return `${Number(month)}月${Number(day)}日`;
   };
-  return segments.map((dates) => {
+  return trips.map(({ dates, title, notes }) => {
     const startDate = dates[0];
     const endDate = dates.at(-1)!;
-    const normalizedName = tripTags[startDate]?.trim().replace(TRIP_TAG_PREFIX, '').trim();
+    const normalizedName = title.trim().replace(TRIP_TAG_PREFIX, '').trim();
     return {
       key: startDate,
       startDate,
       endDate,
       dates,
-      name: normalizedName || getTripDisplayTitle(undefined, dates, outlookTravelTitles) || (startDate === endDate
+      name: normalizedName || (startDate === endDate
         ? formatShortDate(startDate)
         : `${formatShortDate(startDate)}–${formatShortDate(endDate)}`),
-      note: tripNotes[startDate]?.trim() ?? '',
+      note: notes.trim(),
     };
   });
 }
@@ -646,7 +619,7 @@ export function routineRecurrence(repeatFlag: string | undefined): 'none' | 'dai
 export function getTickTickRoutineExcludedTaskIds(template: TickTickTemplate, state: TickTickTripSyncState): Set<string> {
   const ids = new Set(template.tasks.map((task) => task.id));
   ids.add(template.rootTask.id);
-  for (const instance of [...Object.values(state.instances), ...Object.values(state.wishInstances ?? {})]) {
+  for (const instance of [...Object.values(state.instances), ...Object.values(state.wishInstances ?? {}), ...Object.values(state.retiredReminderInstances ?? {})]) {
     if (instance.rootTaskId) ids.add(instance.rootTaskId);
     for (const id of Object.values(instance.taskIdsByTemplateId)) ids.add(id);
   }
@@ -886,11 +859,9 @@ export async function updateRoutineTaskDate(
 // Callers hold the shared write lock. Re-read each matching task to retain edits
 // made since the list snapshot, and never revive a completed occurrence.
 export async function readRoutineCalendarState(api?: TickTickApi): Promise<unknown> {
-  const [{ kv }, { resolveCalendarState }] = await Promise.all([import('./_accountKv.js'), import('../src/utils/internship.js')]);
-  const [calendar, config, locationTags] = await Promise.all([
-    kv.get('calendar-tags'), kv.get('app-config'), api ? readTickTickLocationTags(api) : undefined,
-  ]);
-  return { ...resolveCalendarState(config, calendar), ...(locationTags !== undefined ? { locationTags } : {}) };
+  const { readBonCalSchedulingState } = await import('./_bonCal/service.js');
+  const [calendar, locationTags] = await Promise.all([readBonCalSchedulingState(), api ? readTickTickLocationTags(api) : undefined]);
+  return { ...calendar, ...(locationTags !== undefined ? { locationTags } : {}) };
 }
 
 export function nextRoutineSceneDate(task: TickTickTask, calendarState: unknown, from: string): string | null {
@@ -1652,6 +1623,45 @@ export async function reconcileTickTickTrips(options: {
   saveState: (state: TickTickTripSyncState) => Promise<void>;
 }): Promise<TickTickSyncResult> {
   const { api, template, state, today, saveState } = options;
+  let remindersDeleted = 0;
+  // Reminder-generated trees are only removed when every linked task still
+  // matches the generated payload. Any progress/edit preserves the whole tree.
+  for (const [key, instance] of Object.entries(state.instances)) {
+    if (options.matchByDateOverlap === false || !instance.name || cleanTravelTitle(instance.name)) continue;
+    const projectId = instance.projectId ?? options.legacyProjectId ?? template.projectId;
+    const trip = { key, startDate: instance.startDate, endDate: instance.endDate, dates: instance.dates, name: instance.name, note: '' };
+    const mappedIds = new Set(Object.values(instance.taskIdsByTemplateId));
+    let untouched = mappedIds.size > 0;
+    try {
+      const project = await api.getProjectData(projectId);
+      if (project.tasks.some(task => task.parentId && mappedIds.has(task.parentId) && !mappedIds.has(task.id))) untouched = false;
+    } catch { untouched = false; }
+    for (const [templateId, taskId] of Object.entries(instance.taskIdsByTemplateId)) {
+      const original = template.tasks.find(task => task.id === templateId);
+      if (!original) { untouched = false; break; }
+      let task: TickTickTask;
+      try { task = await api.getTask(projectId, taskId); } catch { untouched = false; break; }
+      const parentId = original.parentId ? instance.taskIdsByTemplateId[original.parentId] : undefined;
+      const expected = baseTaskPayload(original, trip, template, parentId, initialChecklistItems(original, template, trip));
+      const normalize = (value: unknown) => JSON.stringify(value ?? '');
+      if ((task.status ?? 0) !== 0 || task.completedTime || task.title !== expected.title
+        || normalize(task.content) !== normalize(expected.content) || normalize(task.desc) !== normalize(expected.desc)
+        || normalize(task.tags ?? []) !== normalize(expected.tags ?? []) || (task.priority ?? 0) !== (expected.priority ?? 0)
+        || normalize(task.parentId) !== normalize(expected.parentId) || normalize(task.repeatFlag) !== normalize(expected.repeatFlag)
+        || normalize(task.reminders ?? []) !== normalize(expected.reminders ?? []) || task.repeatFrom
+        || !sameDateSnapshot(dateSnapshot(task), instance.taskDateStates?.[taskId]?.lastSynced ?? dateSnapshot(expected))
+        || instance.taskDateStates?.[taskId]?.manual
+        || (task.items ?? []).some(item => Number(item.status ?? 0) !== 0 || item.completedTime)
+        || JSON.stringify((task.items ?? []).map(item => [item.title, item.startDate ?? '', item.isAllDay ?? true]))
+          !== JSON.stringify((expected.items as TickTickChecklistItem[] ?? []).map(item => [item.title, item.startDate ?? '', item.isAllDay ?? true]))) {
+        untouched = false; break;
+      }
+    }
+    if (untouched) { await deleteGeneratedTree(api, instance, projectId, template.tasks, () => saveState(state)); remindersDeleted++; }
+    else (state.retiredReminderInstances ??= {})[key] = structuredClone(instance);
+    delete state.instances[key];
+    await saveState(state);
+  }
   const activeTrips = options.trips.filter((trip) => trip.endDate >= today);
   const activeKeys = new Set(activeTrips.map((trip) => trip.key));
   const activeInstances = Object.entries(state.instances).filter(([key, instance]) => instance.endDate >= today || activeKeys.has(key));
@@ -1719,7 +1729,7 @@ export async function reconcileTickTickTrips(options: {
   state.lastSyncAt = new Date().toISOString();
   state.lastError = undefined;
   await saveState(state);
-  return { createdTrips, updatedTrips, deletedTrips, activeTrips: activeTrips.length };
+  return { createdTrips, updatedTrips, deletedTrips: deletedTrips + remindersDeleted, activeTrips: activeTrips.length };
 }
 
 export async function reconcileTickTickWishPreparations(options: {

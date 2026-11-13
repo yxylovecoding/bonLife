@@ -32,7 +32,8 @@ export interface LaundryDecision { id: string; target?: string; date?: string; r
 export function laundryLocation(configState: unknown, date?: string, calendarState?: unknown): SceneCity | null {
   const config = (configState as { config?: AppConfig } | null)?.config;
   if (!date) return readSceneCity(config?.schoolCity);
-  const calendar = calendarState as { tagMap?: Record<string, TagKind>; dayOverrides?: unknown } | null;
+  const calendar = calendarState as { tagMap?: Record<string, TagKind>; dayOverrides?: unknown; cityMap?: Record<string, SceneCity | null> } | null;
+  if (calendar?.cityMap && Object.hasOwn(calendar.cityMap, date)) return readSceneCity(calendar.cityMap[date]);
   return resolveDailyContext(date, calendar?.tagMap?.[date], { config: config ?? {}, dayOverrides: normalizeDayOverrides(calendar?.dayOverrides) }).city;
 }
 
@@ -233,7 +234,9 @@ async function moveLaundry(api: TickTickApi, original: TickTickTask, date: strin
 }
 
 export async function syncLaundrySchedule(api: TickTickApi, options: PlanOptions & { connectionId: string; excludedTaskIds?: ReadonlySet<string>; deferState?: (save: () => Promise<unknown>) => void; mode?: 'appointment' | 'travel' | 'weather' }) {
-  options = { ...options, calendarState: resolveCalendarState(options.configState, options.calendarState) };
+  if (!(options.calendarState as { bonCalRevision?: string } | undefined)?.bonCalRevision) {
+    options = { ...options, calendarState: resolveCalendarState(options.configState, options.calendarState) };
+  }
   const byId = new Map(options.tasks.map(task => [task.id, task]));
   const excluded = (task: TickTickTask) => {
     const seen = new Set<string>();

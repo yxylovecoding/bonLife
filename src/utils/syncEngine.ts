@@ -1,3 +1,4 @@
+import { BONCAL_CONFIG_FIELDS, BONCAL_CALENDAR_FIELDS } from '../boncal/state';
 import { normalizeDayOverrides } from './internship';
 import { getAccountStorage } from './accountCache';
 import { apiFetch } from './authClient';
@@ -17,6 +18,7 @@ import { normalizeOutlookCalendarState, normalizeOutlookTravelTitles, normalizeO
 import { mergeSyncValue, sameSyncValue } from './syncMerge';
 import { detectAllTrips } from './trips';
 import { reconcileTripWishes } from './wishes';
+import { acceptBonCalRevision, bonCalRevision } from '../boncal/client';
 
 const accountStorage = getAccountStorage();
 
@@ -65,7 +67,7 @@ const stores: StoreEntry[] = [
     serialize: () => {
       const s = useCalendarStore.getState();
       return { tagMap: s.tagMap, dayOverrides: s.dayOverrides, initializedFromRecords: s.initializedFromRecords, confirmedExpenses: s.confirmedExpenses,
-        outlookApplied: s.outlookApplied, manualTagDates: s.manualTagDates, outlookTravelTitles: s.outlookTravelTitles, outlookWishEvents: s.outlookWishEvents };
+        holidayDataByYear: s.holidayDataByYear, outlookApplied: s.outlookApplied, manualTagDates: s.manualTagDates, outlookTravelTitles: s.outlookTravelTitles, outlookWishEvents: s.outlookWishEvents };
     },
   },
   {
@@ -184,6 +186,7 @@ async function fetchServer(): Promise<Record<string, unknown> | null> {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: unknown = await res.json();
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('同步数据无效');
+    acceptBonCalRevision((data as Record<string, unknown>).bonCalRevision);
     return data as Record<string, unknown>;
   }, {
     retry: true,
@@ -199,18 +202,44 @@ function serializeAllStores() {
 async function uploadStores(selectedStores: readonly StoreEntry[]) {
   const body: Record<string, unknown> = {};
   for (const s of selectedStores) body[s.key] = s.serialize();
+  if (bonCalRevision()) body.bonCalRevision = bonCalRevision();
   const res = await requestWithRetry((signal) => apiFetch('/api/sync', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal,
   }), {
     timeoutMessage: '账单保存超时，请重试',
     networkMessage: '网络连接失败，请重试',
   });
-  if (!res.ok) throw new Error(`upload HTTP ${res.status}`);
+  if (!res.ok) throw new Error(res.status === 409 ? '日历已更新，当前编辑已保留，请刷新后保存' : `upload HTTP ${res.status}`);
+  const saved = await res.json() as { bonCalRevision?: string; calendar?: Record<string, unknown>; config?: Record<string, unknown>; tripSettings?: Record<string, unknown> };
   for (const s of selectedStores) {
     if (sameSyncValue(s.serialize(), body[s.key])) pending.delete(s.key);
     else pending.set(s.key, body[s.key] as Record<string, unknown>);
   }
+  if (saved.calendar && saved.bonCalRevision) applyBonCalResult({ revision: saved.bonCalRevision,
+    calendar: saved.calendar, config: saved.config, tripSettings: saved.tripSettings });
   savePending();
+}
+
+/** Apply a bonCal response without treating cloud updates as user edits. */
+export function applyBonCalResult(result: { revision: string; calendar: Record<string, unknown>; config?: Record<string, unknown>; tripSettings?: Record<string, unknown> }) {
+  const calendarBusiness = Object.fromEntries(Object.entries(stores.find(store => store.key === 'calendar-tags')!.serialize())
+    .filter(([key]) => !BONCAL_CALENDAR_FIELDS.includes(key as never)));
+  const values: Record<string, Record<string, unknown>> = { 'calendar-tags': { ...calendarBusiness, ...result.calendar } };
+  if (result.tripSettings) values['trip-tags'] = result.tripSettings;
+  if (result.config) values['app-config'] = { config: { ...Object.fromEntries(Object.entries(useConfigStore.getState().config).filter(([key]) => !BONCAL_CONFIG_FIELDS.includes(key as never))), ...result.config } };
+  syncingFromServer = true;
+  try {
+    for (const store of stores) {
+      const value = values[store.key];
+      if (!value) continue;
+      const merged = pending.has(store.key) ? mergeSyncValue(pending.get(store.key), store.serialize(), value) : value;
+      store.setState(merged as Record<string, unknown>);
+      if (sameSyncValue(store.serialize(), value)) pending.delete(store.key);
+      else pending.set(store.key, value);
+    }
+    acceptBonCalRevision(result.revision);
+  } finally { syncingFromServer = false; }
+  syncTripWishes(); savePending();
 }
 
 function debounce<T extends (...args: never[]) => void>(fn: T, ms: number) {

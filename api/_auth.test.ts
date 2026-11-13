@@ -15,6 +15,7 @@ const { data, storage } = vi.hoisted(() => {
   const data = new Map<string, unknown>();
   const storage = {
     get: vi.fn(async (key: string) => data.get(key) ?? null),
+    mset: vi.fn(async (values: Record<string, unknown>) => { for (const [key, value] of Object.entries(values)) data.set(key, value); return 'OK'; }),
     set: vi.fn(async (key: string, value: unknown, options?: { nx?: boolean }) => {
       if (options?.nx && data.has(key)) return null;
       data.set(key, value);
@@ -93,6 +94,7 @@ beforeEach(() => {
   data.clear();
   vi.clearAllMocks();
   storage.eval.mockImplementation(async (script: string, keys: string[], args: string[]) => {
+    if (script.includes("ARGV[1] then return redis.call('del'")) { if (data.get(keys[0]) === args[0]) data.delete(keys[0]); return 1; }
     if (script !== READ_PHOTO) throw new Error('Unexpected script');
     const photo = data.get(keys[0]) as string | undefined;
     if (!photo) return ['', ''];
@@ -133,12 +135,12 @@ describe('账号密码与 Key 登录', () => {
     for (const cookie of [passwordSession.cookie, keySession.cookie]) {
       const result = await call(request('GET', undefined, { cookie }), sync);
       expect(result.status).toBe(200);
-      expect(result.body).toEqual(bills);
+      expect(result.body).toMatchObject({ ...bills, bonCalRevision: expect.any(String) });
     }
     expect(await readAccount()).toEqual({ ...legacy.account, accountId: 'legacy' });
     expect(data.get(legacy.key)).toEqual(legacy.account);
-    expect(data.get('calendar-tags')).toEqual(bills['calendar-tags']);
-    expect(storage.set.mock.calls.every(([key]) => key.startsWith('auth:'))).toBe(true);
+    expect(data.get('calendar-tags')).toMatchObject(bills['calendar-tags']);
+    expect(storage.set.mock.calls.every(([key]) => key.startsWith('auth:') || key.startsWith('boncal:') || key === 'outlook:calendar-write:lock')).toBe(true);
   });
 
   it.each([{ key: 'arbitrary-key' }, { username: 'other', password: 'test-original-key' }, { username: 'bon', password: 'wrong' }])(
@@ -207,7 +209,7 @@ describe('账号密码与 Key 登录', () => {
     const created = await register({ username: 'new-user' });
     expect(created.status).toBe(200);
     const cookie = created.headers['Set-Cookie'].split(';')[0];
-    expect((await call(request('GET', undefined, { cookie }), sync)).status).toBe(204);
+    expect((await call(request('GET', undefined, { cookie }), sync)).body).toMatchObject({ 'calendar-tags': { tagMap: {} }, bonCalRevision: expect.any(String) });
     for (const endpoint of [mail, boncv]) {
       expect((await call(request('GET', undefined, { cookie }), endpoint)).status).toBe(401);
     }
@@ -298,8 +300,8 @@ describe('账号密码与 Key 登录', () => {
     const body = { 'bill-details': { private: 'a' }, accountId: 'legacy' };
     expect((await call(request('PUT', body, { cookie: aCookie }), sync)).status).toBe(200);
     expect((await call(request('GET', undefined, { cookie: aCookie }), sync)).body)
-      .toEqual({ 'bill-details': { private: 'a' } });
-    expect((await call(request('GET', undefined, { cookie: bCookie }), sync)).status).toBe(204);
+      .toMatchObject({ 'bill-details': { private: 'a' }, bonCalRevision: expect.any(String) });
+    expect((await call(request('GET', undefined, { cookie: bCookie }), sync)).body).not.toHaveProperty('bill-details');
     expect((await call(request('POST', body, { cookie: aCookie }), backup)).status).toBe(200);
     expect(data.has(`account:${accountId}:sync-history:manual:index`)).toBe(true);
     expect(data.has('sync-history:manual:index')).toBe(false);

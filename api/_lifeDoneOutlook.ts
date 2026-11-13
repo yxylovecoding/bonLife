@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { kv } from './_accountKv.js';
 import { OUTLOOK_CONNECTION_KEY, type OutlookConnection } from './_outlookSync.js';
-import { decryptOutlookConnection, fetchCalendar, parseOutlookCalendar } from './_outlookCalendar.js';
+import { decryptOutlookConnection, readBonCalSourcesEvents } from './_bonCal/provider.js';
 import type { DoneItem } from '../src/utils/bonLife.js';
 import { classifyDoneCategory } from '../src/utils/lifeDone.js';
 import { nextCalendarDate, type OutlookDayEvent } from '../src/utils/outlookCalendar.js';
@@ -51,11 +51,11 @@ export async function syncOutlookDoneMonth(month: string, now = new Date()) {
     const input = decryptOutlookConnection(connection.encrypted, (process.env.SYNC_SECRET || '').trim());
     const [year, number] = month.split('-').map(Number);
     const from = `${month}-01`, until = new Date(Date.UTC(year, number, 1)).toISOString().slice(0, 10);
-    const items = (await Promise.all(input.sources.map(async source => {
-      const text = await fetchCalendar(source.url);
-      return outlookDoneItems(parseOutlookCalendar(text, source.kind, from, until, true, true,
-        { timezone: 'Asia/Shanghai', includeFree: true, includeTaskLink: true }), month, source.name, connection.id, now);
-    }))).flat();
+    const sources = await readBonCalSourcesEvents(input.sources, from, until);
+    const backup = sources.some(source => source.provider === 'google');
+    const fresh = sources.flatMap(source => outlookDoneItems(source.events, month, source.name, connection.id, now));
+    const previous = backup ? await kv.get<OutlookDoneSnapshot>(outlookDoneKey(month)) : null;
+    const items = [...new Map([...(previous?.connectionId === connection.id ? previous.items : []), ...fresh].map(item => [item.id, item])).values()];
     const snapshot: OutlookDoneSnapshot = { connectionId: connection.id, requestedAt, syncedAt: now.toISOString(), items };
     // Replace a complete month only after every calendar succeeds, so edits and
     // cancellations are reflected without saving a partial response or stale connection.

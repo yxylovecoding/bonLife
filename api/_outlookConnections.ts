@@ -15,14 +15,14 @@ export async function readOutlookConnections(): Promise<OutlookConnectionSummary
     kv.get<OutlookConnection>(OUTLOOK_CONNECTION_KEY), kv.get<LifeConnection>(LIFE_CONNECTION_KEY),
     kv.get<{ connectionId: string; syncedAt?: string }>(periodsKey(year)), kv.get<{ connectionId: string; requestedAt: number }>('outlook:calendar-snapshots:v1'),
     outlookWriteStatus().catch(() => null),
-    kv.get<{ connectionId: string; error?: string }>(OUTLOOK_READ_STATUS_KEY),
+    kv.get<{ connectionId: string; error?: string; sources?: { name: string; provider: string }[] }>(OUTLOOK_READ_STATUS_KEY),
     kv.get<{ connectionId: string; error?: string }>('bonlife:period-read-status:v1'),
   ]);
   const result: OutlookConnectionSummary[] = [];
   if (connection) {
     try {
       const input = decryptOutlookConnection(connection.encrypted, (process.env.SYNC_SECRET || '').trim());
-      input.sources.forEach((source, index) => result.push({ id: `subscription-${index}`, name: source.name, kind: 'subscription', connected: true,
+      input.sources.forEach((source, index) => result.push({ id: `subscription-${index}`, name: `${source.name}${readStatus?.connectionId === connection.id && readStatus.sources?.some(s => s.name === source.name && s.provider === 'google') ? ' · Google 备用' : ''}`, kind: 'subscription', connected: true,
         error: readStatus?.connectionId === connection.id && readStatus.error ? '订阅暂时读取失败，请重试' : undefined,
         ...(snapshots?.connectionId === connection.id && snapshots.requestedAt ? { syncedAt: new Date(snapshots.requestedAt).toISOString() } : {}) }));
     } catch { result.push({ id: 'subscription', name: '日历订阅', kind: 'subscription', connected: true, error: '连接信息暂不可用' }); }

@@ -1,3 +1,4 @@
+import { readBonCalInputs } from './_bonCal/repository.js';
 import { kv } from './_accountKv.js';
 import { readCalendarLocations } from './_calendarWeather.js';
 import { normalizedCityName } from '../src/utils/calendarPresentation.js';
@@ -11,10 +12,12 @@ import { hasTaskLocation, taskLocationAllowed } from './_ticktickLocation.js';
 
 export interface LocationVisibility { names: string[]; today: string[]; unknown: boolean; calendarState?: unknown; date?: string }
 export async function readLocationVisibility(today: string, calendarState?: unknown): Promise<LocationVisibility> {
-  const [days, config, calendar, trips, contexts, plans] = await Promise.all([
-    readCalendarLocations(today, today, calendarState), kv.get('app-config'), kv.get('calendar-tags'), kv.get('trip-tags'),
+  const resolved = calendarState as { bonCalLocations?: Awaited<ReturnType<typeof readCalendarLocations>> } | undefined;
+  const [days, source, contexts, plans] = await Promise.all([
+    resolved?.bonCalLocations ?? readCalendarLocations(today, today, calendarState), readBonCalInputs(),
     kv.hgetall('bonclothes:contexts:v1'), kv.hgetall('bonclothes:trip-plans:v1'),
   ]);
+  const { config, calendar, tripSettings: trips } = source;
   if (days[today]?.error) throw new Error('地点读取失败');
   const names = new Set<string>();
   const walk = (value: unknown) => {

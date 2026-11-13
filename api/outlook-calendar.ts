@@ -8,6 +8,9 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { authOk, sameOrigin } from './_auth.js';
 import { decryptOutlookConnection, encryptOutlookConnection, parseOutlookInput, parseOutlookRange, readOutlookSnapshot } from './_outlookCalendar.js';
 import { disconnectOutlookCalendar, OUTLOOK_CONNECTION_KEY as CONNECTION_KEY, outlookSyncError, saveOutlookSnapshot, type OutlookConnection as Connection } from './_outlookSync.js';
+import { readBonCalContext } from './_bonCal/service.js';
+import { BonCalConflict, markBonCalReadFailure, readBonCalInputs, saveBonCalUpload } from './_bonCal/repository.js';
+import { googleCalendarStatus } from './_bonCal/google.js';
 
 async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.query?.app === 'write') return (await import('./_outlookWriteRoute.js')).default(req, res);
@@ -34,10 +37,24 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(502).json({ error: message });
     }
   }
-  if (!['GET', 'POST', 'PUT', 'DELETE'].includes(req.method || '')) return res.status(405).json({ error: 'method not allowed' });
+  if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method || '')) return res.status(405).json({ error: 'method not allowed' });
   const secret = (process.env.SYNC_SECRET || '').trim();
   if (!hasRulePolicy()) return withRulePolicy(await readSchedulingRules(), () => handler(req, res));
+  let observedConnection: Connection | undefined;
   try {
+    if (req.query.action === 'context') {
+      if (req.method === 'GET') {
+        const { startDate, endDate } = parseOutlookRange(req.query.startDate, req.query.endDate);
+        return res.status(200).json(await readBonCalContext(startDate, endDate, { repair: true }));
+      }
+      if (req.method === 'PATCH') {
+        const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+        if (!body || typeof body.revision !== 'string' || !body.data || typeof body.data !== 'object') return res.status(400).json({ error: '日历修改无效' });
+        const saved = await saveBonCalUpload(body.data, body.revision);
+        return res.status(200).json({ revision: saved.revision, calendar: saved.calendar, tripSettings: saved.tripSettings, config: saved.config });
+      }
+      return res.status(405).json({ error: 'method not allowed' });
+    }
     if (req.method === 'DELETE') {
       await disconnectOutlookCalendar();
       return res.status(200).json({ connected: false });
@@ -56,7 +73,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       const connection = await kv.get<Connection>(CONNECTION_KEY);
       if (!connection) return privateJson(req, res, { connected: false });
       const input = decryptOutlookConnection(connection.encrypted, secret);
-      return privateJson(req, res, { connected: true, connectionId: connection.id, policy: input.policy, rules: input.rules,
+      return privateJson(req, res, { connected: true, connectionId: connection.id, policy: input.policy, rules: input.rules, google: await googleCalendarStatus(),
         calendars: { play: Boolean(input.playUrl), class: Boolean(input.classUrl) },
         sources: input.sources.map((s) => ({ name: s.name, kind: s.kind, hasUrl: true })) });
     }
@@ -89,19 +106,25 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       if (body.action === 'preview' && req.method === 'POST') return res.status(200).json({ snapshot, policy: input.policy });
       const connection: Connection = { id: randomUUID(), encrypted: encryptOutlookConnection(input, secret) };
       await saveOutlookSnapshot(connection, snapshot, input.policy, requestedAt, true);
-      return res.status(200).json({ connected: true, connectionId: connection.id, snapshot, policy: input.policy });
+      const canonical = await readBonCalInputs();
+      return res.status(200).json({ connected: true, connectionId: connection.id, snapshot, policy: input.policy, revision: canonical.revision, calendar: canonical.calendar, config: canonical.config, tripSettings: canonical.tripSettings });
     }
     const connection = await kv.get<Connection>(CONNECTION_KEY);
     if (!connection) return res.status(200).json({ connected: false });
     const input = decryptOutlookConnection(connection.encrypted, secret);
+    observedConnection = connection;
     if (body.action === 'availability') {
       const snapshot = await readOutlookSnapshot(input, startDate, endDate, { startDate, endDate });
       return res.status(200).json({ connected: true, availability: snapshot.availability });
     }
     const snapshot = await readOutlookSnapshot(input, startDate, endDate);
     await saveOutlookSnapshot(connection, snapshot, input.policy, requestedAt);
-    return res.status(200).json({ connected: true, connectionId: connection.id, snapshot, policy: input.policy });
+    const canonical = await readBonCalInputs();
+    return res.status(200).json({ connected: true, connectionId: connection.id, snapshot, policy: input.policy, revision: canonical.revision, calendar: canonical.calendar, config: canonical.config, tripSettings: canonical.tripSettings });
   } catch (error) {
+    if (observedConnection) await markBonCalReadFailure(observedConnection, error);
+    if (error instanceof BonCalConflict) return res.status(409).json({ error: error.message });
+    if (req.query.action === 'google') return res.status(400).json({ error: error instanceof Error && /^Google|^请|^未找到/.test(error.message) ? error.message : 'Google 备用连接失败' });
     const message = outlookSyncError(error);
     return res.status(/^(连接已变更|日历已更新|日历正在同步)/.test(message) ? 409 : 502).json({ error: message });
   }
