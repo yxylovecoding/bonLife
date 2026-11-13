@@ -53,6 +53,8 @@ HTTP 验证使用独立假密钥，不连接正式数据、不发送邮件、不
 
 ### 经授权的关窗一次性补跑
 
+天气失败的脱敏服务端日志为 `[daily-weather-failure]`：`stage` 区分 `cache-read`、`request`、`parse`、`cache-write`，`kind` 区分 HTTP 状态、超时、网络、JSON、结构及未知错误。只记录状态码和白名单网络错误码，不记录请求地址、响应正文或凭据。刷新或持久化失败仍返回过期状态，关窗规则继续拒绝该预报。
+
 维护入口仅由服务端环境变量 `BON_RAIN_REPLAY` 启用，默认缺省或空串关闭，不新增公开 API。JSON 字段为 `date`（上海当天）、`accountId`（仅 `legacy`，既有云端 owner）、`projectId`（必须与实际 TickTick 连接一致）、`requestId`（16–80 位字母数字或连字符）、`mode`（`inspect` / `run`）。不放入 Blueprint，不改动现有密钥。
 
 先对目标服务合并写入 `inspect` 参数并部署，通过 `[rain-reminder-replay]` 日志核对城市、预报、去重记录及 `inspected` 结果；再将同一请求改为 `run` 并部署。`run` 会重新读取真实来源并经过原雨天规则及提交确认，仅绕过本次手动请求的晨间限制。任何阶段不确认时不盲目创建。请求执行前保存尝试记录，同一 mode 的同一请求在重启后不会重放；若中断或失败，先核对远端状态，再决定是否使用新的请求 ID。规则已删除或显式前序未执行时仍跳过。
