@@ -15,9 +15,11 @@ const input = { playUrl, classUrl, policy: 'manual' as const, rules: DEFAULT_OUT
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Outlook ICS 解析', () => {
-  it('连接超时后尝试受限的 IPv4 读取，仍不跟随重定向', async () => {
+  it.each(['connect', 'aggregate'])('%s 连接超时后尝试受限的 IPv4 读取，仍不跟随重定向', async kind => {
     const valid = calendar('');
-    const fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed', { cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } }));
+    const cause = kind === 'connect' ? { code: 'UND_ERR_CONNECT_TIMEOUT' }
+      : { errors: [{ code: 'ETIMEDOUT' }, { code: 'ENETUNREACH' }] };
+    const fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed', { cause }));
     vi.stubGlobal('fetch', fetch);
     const get = vi.spyOn(https, 'get').mockImplementation(((_url: string, options: any, callback: (response: any) => void) => {
       expect(options).toMatchObject({ family: 4, headers: { Accept: 'text/calendar' } });

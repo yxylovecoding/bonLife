@@ -141,7 +141,8 @@ export async function fetchCalendar(url: string): Promise<string> {
       const retryable = error instanceof CalendarReadError ? [429, 500, 502, 503, 504].includes(error.http ?? 0)
         : failure.reason === 'network' || failure.reason === 'timeout';
       if (!retryable || attempt >= 1) throw error;
-      ipv4 = 'codes' in failure && failure.codes?.includes('UND_ERR_CONNECT_TIMEOUT') === true;
+      ipv4 = 'codes' in failure && failure.codes?.some(code =>
+        ['UND_ERR_CONNECT_TIMEOUT', 'ETIMEDOUT', 'ENETUNREACH'].includes(code)) === true;
       // Retrying a read cannot duplicate task/calendar writes. Never fall back
       // to yesterday's calendar when the fresh read still fails.
       console.warn('[outlook-calendar-read-retry]', JSON.stringify(failure));
