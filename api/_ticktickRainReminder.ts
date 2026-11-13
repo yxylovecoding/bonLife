@@ -44,13 +44,17 @@ export async function planRainReminder(api: TickTickApi, options: {
   return { reason: rainy ? '有雨，已生成当天 08:00 关窗提醒' : '当天预报无雨，无需关窗提醒' };
 }
 
-export async function readRainReminderForecast(day: string, calendarState: unknown) {
+export async function readRainReminderForecast(day: string, calendarState: unknown, observe?: (value: Record<string, unknown>) => void) {
   const locations = (await readCalendarLocations(day, day, calendarState))[day];
+  observe?.({ locationCount: locations?.locations.length ?? 0, unresolvedCount: locations?.unresolved?.length ?? 0, locationError: locations?.error });
   if (!locations || locations.error || locations.unresolved?.length || locations.locations.length !== 1)
     throw new Error('boncal 当天城市未确认');
   const city = locations.locations[0];
+  observe?.({ city: city.name, latitude: city.latitude, longitude: city.longitude });
   const forecast = await readDailyWeather(city, day, day, 'Asia/Shanghai');
   const weather = forecast.days[day];
+  observe?.({ forecast: { date: day, fetchedAt: forecast.fetchedAt, stale: forecast.stale, error: forecast.error,
+    available: Boolean(weather), code: weather?.code, precipitation: weather?.precipitation } });
   if (forecast.stale || forecast.error || !weather || !Number.isFinite(weather.precipitation))
     throw new Error('当天降雨预报未确认');
   const rainCodes = [51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99];

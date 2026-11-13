@@ -63,10 +63,12 @@ export async function runRainReminderReplay(raw: string | undefined, report: (va
       await refreshDailyHistory(api, tasks, history, now, [request.projectId]);
       const sameDay = (task: TickTickTask) => isRainReminderOnDay(task, request.date);
       const existing = [...tasks, ...history.history, ...abandonedTasks].filter(sameDay);
-      const forecast = await readRainReminderForecast(request.date, calendar ?? {});
+      let forecast: Awaited<ReturnType<typeof readRainReminderForecast>> | undefined, forecastError: string | undefined;
+      try { forecast = await readRainReminderForecast(request.date, calendar ?? {}, value => emit({ phase: 'source', ...value })); }
+      catch (error) { forecastError = schedulingRuleFailureReason(error); }
       emit({ phase: 'preflight', checkedDay: await kv.get(rainReminderKey(connectionId)),
-        city: forecast.city.name, latitude: forecast.city.latitude, longitude: forecast.city.longitude,
-        forecast: { code: forecast.weather.code, precipitation: forecast.weather.precipitation, fetchedAt: forecast.fetchedAt, rainy: forecast.rainy },
+        city: forecast?.city.name, latitude: forecast?.city.latitude, longitude: forecast?.city.longitude,
+        forecast: forecast ? { code: forecast.weather.code, precipitation: forecast.weather.precipitation, fetchedAt: forecast.fetchedAt, rainy: forecast.rainy } : { error: forecastError },
         tasks: [...new Map(existing.map(task => [`${task.projectId}:${task.id}`, taskEvidence(task)])).values()] });
       if (request.mode === 'inspect') {
         await kv.set(key, { ...context, phase: 'inspected', at: new Date().toISOString() });

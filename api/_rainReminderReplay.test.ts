@@ -66,7 +66,7 @@ it('连接清单不符时拒绝，不读取其他账号数据或创建', async (
 });
 it('inspect 输出实际城市预报与去重记录，没有任务或当天标记写入', async () => {
   const result = await run({ mode: 'inspect' });
-  expect(result[0]).toMatchObject({ phase: 'preflight', city: '广州', forecast: { rainy: true, precipitation: 3 }, tasks: [] });
+  expect(result.find(row => row.phase === 'preflight')).toMatchObject({ city: '广州', forecast: { rainy: true, precipitation: 3 }, tasks: [] });
   expect(result.at(-1).phase).toBe('inspected'); expect(m.create).not.toHaveBeenCalled(); expect(m.data.has(key)).toBe(false);
   expect(m.historyRead.mock.calls.every(([projects]) => projects.includes(projectId))).toBe(true);
   expect(m.filter).toHaveBeenCalledWith([projectId], [-1]);
@@ -104,7 +104,18 @@ it.each(['unknown-city', 'stale-weather', 'history', 'abandoned'] as const)('%s 
   if (kind === 'stale-weather') m.weather.mockResolvedValue({ stale: true, days: {} });
   if (kind === 'history') m.historyRead.mockRejectedValue(new Error('unavailable'));
   if (kind === 'abandoned') m.filter.mockResolvedValue(Array.from({ length: 200 }, () => reminder(-1)));
-  const result = await run(); expect(result.at(-1).phase).toBe('failed'); expect(m.create).not.toHaveBeenCalled(); expect(m.data.has(key)).toBe(false);
+  const result = await run();
+  if (kind === 'unknown-city' || kind === 'stale-weather') expect(result.at(-1).rule.status).toBe('failed');
+  else expect(result.at(-1).phase).toBe('failed');
+  expect(m.create).not.toHaveBeenCalled(); expect(m.data.has(key)).toBe(false);
+});
+it('缺少当天预报时保留城市与来源诊断，实际雨天规则失败且不建任务', async () => {
+  m.weather.mockResolvedValue({ stale: false, fetchedAt: new Date().toISOString(), days: {} });
+  const result = await run();
+  expect(result).toContainEqual(expect.objectContaining({ phase: 'source', city: '广州' }));
+  expect(result).toContainEqual(expect.objectContaining({ phase: 'source', forecast: expect.objectContaining({ available: false, stale: false }) }));
+  expect(result.at(-1).rule).toMatchObject({ status: 'failed', reason: '当天降雨预报未确认' });
+  expect(m.create).not.toHaveBeenCalled(); expect(m.data.has(key)).toBe(false);
 });
 it('回读失败保留重试机会但同一人工请求不自动重复，下一请求从真实记录恢复', async () => {
   m.get.mockResolvedValue(undefined); const failed = await run();
