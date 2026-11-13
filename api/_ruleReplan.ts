@@ -1,4 +1,4 @@
-import { readAbandonedTodayTaskIds } from './_ticktickAbandoned.js';
+import { abandonedTodayTaskIds, readAbandonedTaskRecords, readAbandonedTodayTaskIds } from './_ticktickAbandoned.js';
 import { schedulingStage } from './_schedulingFailure.js';
 import { createHash } from 'node:crypto';
 import { kv } from './_accountKv.js';
@@ -25,7 +25,7 @@ import { syncExerciseSchedule, isExerciseTask } from './_ticktickExercise.js';
 import { syncLaundrySchedule, isLaundryTask } from './_ticktickLaundry.js';
 import { postponeSwimmingTasks, readHairWashSchedule, readSwimmingCycle } from './_lifeSwimming.js';
 import { syncPeriodPredictionTask } from './_ticktickPeriodPrediction.js';
-import { isRainReminder, planRainReminder } from './_ticktickRainReminder.js';
+import { isRainReminder, isRainReminderOnDay, planRainReminder } from './_ticktickRainReminder.js';
 import { syncLaundryOutlook } from './_outlookLaundry.js';
 import { syncChargingOutlook } from './_outlookCharging.js';
 import { syncHairWashOutlook } from './_outlookHairWash.js';
@@ -111,8 +111,16 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       }
       if (locationTags !== undefined) calendarState = { ...calendarState, locationTags };
       const maintainsDates = options.scope !== 'visibility' || ['daily', 'all', 'night'].includes(options.visibilityKind ?? '');
-      const abandonedToday = maintainsDates
-        ? await schedulingStage('completion-history', true, () => readAbandonedTodayTaskIds(api, tasks, today, now)) : new Set<string>();
+      const runsRainReminder = options.scope !== 'visibility' && !options.specialty && !config.removed?.includes('rain-reminder');
+      const abandonment = maintainsDates ? await schedulingStage('completion-history', true, async () => {
+        // The rain target may have no open tasks after its last reminder was
+        // abandoned. Query it explicitly instead of inferring empty history.
+        const records = await readAbandonedTaskRecords(api, [...tasks.filter(pending).map(task => task.projectId),
+          ...runsRainReminder ? [connection.projectId] : []]);
+        return { records, protectedIds: abandonedTodayTaskIds(tasks, records, today, now) };
+      }) : { records: [], protectedIds: new Set<string>() };
+      const abandonedToday = abandonment.protectedIds;
+      const abandonedTasks = abandonment.records.filter(task => Date.parse(task.completedTime!) <= now.getTime());
       const state: DailyPlanState = saved?.connectionId === connectionId ? structuredClone(saved) : { connectionId, history: [], deadlines: {} };
       let historyError = false;
       if (maintainsDates) {
@@ -188,13 +196,24 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         }, {});
       }
       const sleeping = Boolean(options.scheduled && sleepWindow(now).hidden);
-      if (options.scope !== 'visibility' && !options.specialty) {
+      if (runsRainReminder) {
         plan('rain-reminder', async branch => {
           // Use the saved boncal snapshot, as the calendar's weather view does.
           // An uncommitted Outlook refresh is not a prerequisite or a city source.
           const outcome = await planRainReminder(branch.api, { connectionId, projectId: connection.projectId,
-            tasks: draft.values(), completedTasks: state.history, calendarState: storedCalendar ?? {}, now,
-            deferState: save => draft.saveAfterCommit('rain-reminder', save) });
+            tasks: draft.values(), completedTasks: state.history, abandonedTasks, calendarState: storedCalendar ?? {}, now,
+            verifyReminder: async () => {
+              if ([...state.history, ...abandonedTasks].some(task => isRainReminderOnDay(task, today))) return true;
+              const candidates = draft.committedValues().filter(task => isRainReminderOnDay(task, today));
+              // Confirm unchanged existing tasks too: they may have been edited
+              // externally while this run was planning, without a local write.
+              const verified = await Promise.all(candidates.map(async task => {
+                const current = await api.getTask(task.projectId, task.id);
+                return current?.id === task.id && current.projectId === task.projectId && isRainReminderOnDay(current, today);
+              }));
+              return verified.some(Boolean);
+            },
+            deferState: save => draft.saveAfterCommit('rain-reminder', save, { afterAllWrites: true }) });
           const reminders = draft.values().filter(isRainReminder);
           for (const task of reminders) excluded.add(task.id);
           branch.claimDates(reminders.map(task => task.id));

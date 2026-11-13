@@ -69,6 +69,7 @@ export class RuleTaskVerificationError extends Error {
 
 export function ruleTaskFailureReason(error: unknown): string {
   if (error instanceof RuleTaskVerificationError) return error.message;
+  if (error instanceof Error && error.message === '当天关窗任务未确认，保留重试机会') return error.message;
   const status = error instanceof Error ? error.message.match(/TickTick (\d{3})\b/)?.[1] : undefined;
   return status ? `TickTick 请求失败（HTTP ${status}），已停止本规则后续写入` : '写入未确认，已停止本规则后续写入';
 }
@@ -79,7 +80,7 @@ export class RuleTaskDraft {
   private tasks: Map<string, TickTickTask>;
   private owners = new Map<string, Map<string, SchedulingRuleId>>();
   private requiredRules = new Map<string, Set<SchedulingRuleId>>();
-  private pendingSaves: { rule: SchedulingRuleId; save: () => Promise<unknown> }[] = [];
+  private pendingSaves: { rule: SchedulingRuleId; save: () => Promise<unknown>; afterAllWrites?: boolean }[] = [];
   readonly writeCounts = new Map<SchedulingRuleId, number>();
   private created = new Set<string>();
   private createdBy = new Map<string, SchedulingRuleId>();
@@ -115,7 +116,9 @@ export class RuleTaskDraft {
       rules.add(id); this.requiredRules.set(taskId, rules);
     }
   }
-  saveAfterCommit(rule: SchedulingRuleId, save: () => Promise<unknown>) { this.pendingSaves.push({ rule, save }); }
+  saveAfterCommit(rule: SchedulingRuleId, save: () => Promise<unknown>, options: { afterAllWrites?: boolean } = {}) {
+    this.pendingSaves.push({ rule, save, ...options });
+  }
   // Explicit daily training visibility takes precedence for these planned tasks.
   // The ordinary commit path still verifies concurrency and every saved field.
   revealPlannedTraining(taskIds: Iterable<string>) {
@@ -360,7 +363,7 @@ export class RuleTaskDraft {
           }
           for (const [requested, actual] of assigned.ids) this.realIds.set(requested, actual);
           this.committed.set(saved.id, confirmed);
-          for (const entry of this.pendingSaves) if (entry.rule === this.createdBy.get(id)) await entry.save(); updated++; this.writeCounts.set(this.createdBy.get(id)!, (this.writeCounts.get(this.createdBy.get(id)!) ?? 0) + 1);
+          for (const entry of this.pendingSaves) if (entry.rule === this.createdBy.get(id) && !entry.afterAllWrites) await entry.save(); updated++; this.writeCounts.set(this.createdBy.get(id)!, (this.writeCounts.get(this.createdBy.get(id)!) ?? 0) + 1);
         } catch (error) { fail([this.createdBy.get(id)!], error); }
       }
       for (const taskId of [...writes]) {

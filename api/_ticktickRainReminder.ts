@@ -7,22 +7,30 @@ import { calendarDateInTimeZone, type TickTickApi, type TickTickTask } from './_
 export const rainReminderKey = (connectionId: string) => `ticktick:rain-reminder:v1:${connectionId}`;
 export const isRainReminder = (task: TickTickTask) => task.title === '关窗'
   && ['活', '当天'].every(tag => task.tags?.includes(tag)) && !task.repeatFlag;
+export const isRainReminderOnDay = (task: TickTickTask, day: string) => isRainReminder(task)
+  && [0, 2, -1].includes(task.status ?? 0)
+  && calendarDateInTimeZone(task.startDate || task.dueDate, 'Asia/Shanghai') === day;
 
 // Called inside Orche's shared lock and task draft. Persist only after verified writes.
 export async function planRainReminder(api: TickTickApi, options: {
-  connectionId: string; projectId: string; tasks: TickTickTask[]; completedTasks: TickTickTask[];
+  connectionId: string; projectId: string; tasks: TickTickTask[]; completedTasks: TickTickTask[]; abandonedTasks: TickTickTask[];
   calendarState: unknown; now: Date; deferState: (save: () => Promise<unknown>) => void;
+  verifyReminder: () => Promise<boolean>;
 }) {
   const { day, hidden } = sleepWindow(options.now);
   const noon = Date.parse(`${day}T12:00:00+08:00`);
   if (hidden || options.now.getTime() >= noon) return { reason: '不在晨间检查时段（05:01–11:59）' };
   const key = rainReminderKey(options.connectionId);
   if (await kv.get<string>(key) === day) return { reason: '当天已检查' };
-  const finish = () => options.deferState(() => kv.set(key, day));
+  const finish = (needsReminder: boolean) => options.deferState(async () => {
+    // A draft match is provisional. Cancelled or unconfirmed writes cannot
+    // consume the day, even if another rule proposed a same-day reminder.
+    if (needsReminder && !await options.verifyReminder()) throw new Error('当天关窗任务未确认，保留重试机会');
+    return kv.set(key, day);
+  });
   // Recover an already-created task after an interrupted run, including completion.
-  if ([...options.tasks, ...options.completedTasks].some(task => isRainReminder(task)
-    && calendarDateInTimeZone(task.startDate || task.dueDate, 'Asia/Shanghai') === day)) {
-    finish(); return { reason: '已有同日关窗，不重复创建' };
+  if ([...options.tasks, ...options.completedTasks, ...options.abandonedTasks].some(task => isRainReminderOnDay(task, day))) {
+    finish(true); return { reason: '已有同日关窗，不重复创建' };
   }
   const locations = (await readCalendarLocations(day, day, options.calendarState))[day];
   if (!locations || locations.error || locations.unresolved?.length || locations.locations.length !== 1)
@@ -40,6 +48,6 @@ export async function planRainReminder(api: TickTickApi, options: {
     await api.createTask({ projectId: options.projectId, title: '关窗', startDate: time, dueDate: time,
       timeZone: 'Asia/Shanghai', isAllDay: false, priority: 0, tags: ['活', '当天'], reminders: ['TRIGGER:PT0S'] });
   }
-  finish();
+  finish(rainy);
   return { reason: rainy ? '有雨，已生成当天 08:00 关窗提醒' : '当天预报无雨，无需关窗提醒' };
 }

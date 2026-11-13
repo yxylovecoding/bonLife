@@ -25,16 +25,19 @@ export function abandonedTodayTaskIds(tasks: TickTickTask[], records: TickTickTa
     && counts.get(routineOccurrenceKey(task)) === 1 && families.has(routineOccurrenceKey(task))).map(task => task.id));
 }
 
-export async function readAbandonedTodayTaskIds(api: TickTickApi, tasks: TickTickTask[], today: string, now = new Date()) {
+export async function readAbandonedTaskRecords(api: TickTickApi, projectIds: string[]) {
   // Query each project separately: a global 200-row response could hide the
   // relevant occurrence. Fail closed at the provider limit; never assume empty.
-  const projects = [...new Set(tasks.filter(pending).map(task => task.projectId))];
-  const records = (await Promise.all(projects.map(async projectId => {
+  return (await Promise.all([...new Set(projectIds)].map(async projectId => {
     const rows = await api.filterTasks([projectId], [-1]);
     if (!Array.isArray(rows) || rows.length >= 200 || rows.some(row => row.projectId !== projectId || row.status !== -1)) {
       throw new Error('TickTick 放弃记录未完整读取，保留当前排期');
     }
     return rows;
   }))).flat();
+}
+
+export async function readAbandonedTodayTaskIds(api: TickTickApi, tasks: TickTickTask[], today: string, now = new Date()) {
+  const records = await readAbandonedTaskRecords(api, tasks.filter(pending).map(task => task.projectId));
   return abandonedTodayTaskIds(tasks, records, today, now);
 }

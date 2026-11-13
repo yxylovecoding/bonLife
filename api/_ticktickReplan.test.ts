@@ -971,4 +971,86 @@ describe('雨天关窗独立于 Outlook 刷新', () => {
     expect(status(result, 'rain-reminder').status).toBe('skipped');
     expect(m.weather).not.toHaveBeenCalled(); expect(m.create).not.toHaveBeenCalled(); expect(m.data.has(key)).toBe(false);
   });
+  it('P2 回归：取消昨天关窗的草稿改期后不消耗当天，重试成功提交后才记录', async () => {
+    m.fullOutlook.mockResolvedValue({ connected: true, snapshot: { startDate: day, endDate: '2026-12-03', tags: {} },
+      connection: { id: 'outlook' }, policy: 'manual', requestedAt: Date.now() });
+    m.saveOutlook.mockRejectedValue(new Error('calendar write unavailable'));
+    const original = task('old-rain', { title: '关窗', tags: ['活', '当天', 'always-today'], isAllDay: false,
+      startDate: '2026-11-02T08:00:00+0800', dueDate: '2026-11-02T08:00:00+0800', reminders: ['TRIGGER:PT0S'] });
+    m.tasks = [structuredClone(original)];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await runRuleReplan({ scope: 'full' });
+      expect(status(result, 'always-today').status).toBe('skipped');
+      expect(status(result, 'rain-reminder')).toMatchObject({ status: 'failed', reason: '当天关窗任务未确认，保留重试机会' });
+      expect(m.tasks).toEqual([original]); expect(m.data.has(key)).toBe(false);
+    }
+    expect(m.create).not.toHaveBeenCalled(); expect(m.write).not.toHaveBeenCalled();
+    m.saveOutlook.mockResolvedValue(undefined);
+    const recovered = await runRuleReplan({ scope: 'full' });
+    expect(status(recovered, 'rain-reminder').status).toBe('success');
+    expect(m.tasks[0].startDate).toBe(`${day}T08:00:00+0800`); expect(m.data.get(key)).toBe(day);
+    expect(m.create).not.toHaveBeenCalled();
+  });
+  it.each(['date', 'missing', 'identity'] as const)('既有今日关窗在最终确认时变为 %s，保留当天重试机会', async change => {
+    failOutlook();
+    const original = task('rain', { title: '关窗', tags: ['活', '当天'], isAllDay: false,
+      startDate: `${day}T08:00:00+0800`, dueDate: `${day}T08:00:00+0800` });
+    m.tasks = [original];
+    m.get.mockImplementation(async () => change === 'missing' ? undefined : { ...original,
+      ...change === 'date' ? { startDate: '2026-11-04T08:00:00+0800' } : { id: 'other' } });
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'rain-reminder').status).toBe('failed');
+    expect(m.data.has(key)).toBe(false); expect(m.create).not.toHaveBeenCalled();
+  });
+  it('新任务回读后又被外部改期，最终检查前不提前保存当天标记', async () => {
+    failOutlook(); let reads = 0;
+    m.get.mockImplementation(async (_project, id) => {
+      const current = m.tasks.find(t => t.id === id)!;
+      if (++reads === 2) {
+        expect(m.data.has(key)).toBe(false);
+        current.startDate = current.dueDate = '2026-11-04T08:00:00+0800';
+      }
+      return structuredClone(current);
+    });
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'rain-reminder').status).toBe('failed');
+    expect(m.create).toHaveBeenCalledOnce(); expect(m.data.has(key)).toBe(false);
+  });
+  it.each(['full', 'hourly'] as const)('既有缺口：%s 没有任何未完成任务时仍读取并去重已放弃的今日关窗', async scope => {
+    failOutlook();
+    m.abandoned = [task('abandoned-rain', { title: '关窗', tags: ['活', '当天'], status: -1,
+      startDate: `${day}T08:00:00+0800`, completedTime: `${day}T06:30:00+0800` })];
+    const result = await runRuleReplan({ scope });
+    expect(m.abandonedRead).toHaveBeenCalledWith(['life'], [-1]);
+    expect(status(result, 'rain-reminder')).toMatchObject({ status: 'success', reason: '已有同日关窗，不重复创建' });
+    expect(m.create).not.toHaveBeenCalled(); expect(m.weather).not.toHaveBeenCalled(); expect(m.data.get(key)).toBe(day);
+    expect(m.data.get(DAILY_PLAN_KEY).history).toEqual([]);
+  });
+  it.each(['2026-11-02', day])('放弃记录按原提醒日期 %s 去重，不混淆放弃动作日期', async reminderDay => {
+    failOutlook();
+    m.abandoned = [task('abandoned-rain', { title: '关窗', tags: ['活', '当天'], status: -1,
+      startDate: `${reminderDay}T08:00:00+0800`, completedTime: '2026-11-02T23:00:00+0800' })];
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'rain-reminder').status).toBe('success');
+    expect(m.create).toHaveBeenCalledTimes(reminderDay === day ? 0 : 1);
+  });
+  it('创建回读失败后用户放弃了任务，下轮从放弃记录恢复，不再补建', async () => {
+    failOutlook(); m.get.mockResolvedValue(undefined);
+    await runRuleReplan({ scope: 'full' }); expect(m.data.has(key)).toBe(false);
+    m.abandoned = m.tasks.map(t => ({ ...t, status: -1, completedTime: `${day}T07:01:00+0800` }));
+    m.tasks = [];
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(status(result, 'rain-reminder').status).toBe('success');
+    expect(m.create).toHaveBeenCalledOnce(); expect(m.data.get(key)).toBe(day);
+  });
+  it.each(['failure', 'truncated', 'wrong-project'] as const)('空清单放弃历史 %s 时拒绝创建，不把读取异常当作没有记录', async kind => {
+    m.abandonedRead.mockImplementation(async (_projects, statuses) => {
+      if (!statuses.includes(-1)) return [];
+      if (kind === 'failure') throw new Error('history unavailable');
+      return Array.from({ length: kind === 'truncated' ? 200 : 1 }, (_, i) => task(`abandoned-${i}`, {
+        status: -1, projectId: kind === 'wrong-project' ? 'other' : 'life', completedTime: `${day}T06:30:00+0800` }));
+    });
+    await expect(runRuleReplan({ scope: 'full' })).rejects.toThrow();
+    expect(m.create).not.toHaveBeenCalled(); expect(m.data.has(key)).toBe(false);
+  });
 });
