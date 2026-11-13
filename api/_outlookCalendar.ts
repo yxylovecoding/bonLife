@@ -333,7 +333,9 @@ export async function readOutlookSnapshot(input: OutlookConnectionInput, startDa
     { name: '玩', url: input.playUrl, kind: 'play' as const },
     { name: '课', url: input.classUrl, kind: 'class' as const },
   ].filter((s) => s.url);
-  const events = await Promise.all(sources.map(async ({ name, kind, url }) => {
+  let events: { name: string; days: OutlookDayEvent[]; timed: OutlookDayEvent[] }[];
+  let provider: 'outlook' | 'google' = 'outlook';
+  try { events = await Promise.all(sources.map(async ({ name, kind, url }) => {
     try {
       const text = await fetchCalendar(url);
       // Both windows use the same fetched document. Share parsing only within
@@ -347,12 +349,25 @@ export async function readOutlookSnapshot(input: OutlookConnectionInput, startDa
       // Never forward upstream errors: they can contain the private subscription URL.
       throw new Error(`「${name}」日历读取失败，${calendarReadAdvice(error)}`);
     }
-  }));
+  })); } catch (error) {
+    const { readGoogleCalendarSources } = await import('./_googleCalendar.js');
+    const from = [startDate, availabilityRange?.startDate ?? startDate].sort()[0];
+    const until = [endDate, availabilityRange?.endDate ?? endDate].sort().at(-1)!;
+    const backup = await readGoogleCalendarSources(sources, from, until).catch(() => null);
+    if (!backup) throw error;
+    provider = 'google';
+    events = backup.map(source => ({ name: source.name,
+      days: source.events.filter(event => event.allDay && event.startDate < endDate && event.endDate > startDate),
+      timed: availabilityRange ? source.events.filter(event => !event.allDay
+        && Date.parse(event.startDate) < Date.parse(`${availabilityRange.endDate}T00:00:00+08:00`)
+        && Date.parse(event.endDate) > Date.parse(`${availabilityRange.startDate}T00:00:00+08:00`)) : [],
+    }));
+  }
   const snapshot = buildOutlookSnapshot(events
     .filter((source) => source.name === '玩' || source.name === '课')
     .flatMap((source) => source.days), startDate, endDate, input.rules, hasRulePolicy() ? activeRuleOrder(currentRulePolicy()) : undefined);
   if (availabilityRange) snapshot.availability = { ...availabilityRange, events: events.flatMap((source) => source.timed)
     .map((event) => ({ title: event.title, start: event.startDate, end: event.endDate,
       ...(event.taskLink ? { taskLink: event.taskLink } : {}) })) };
-  return snapshot;
+  return provider === 'google' ? { ...snapshot, provider } : snapshot;
 }

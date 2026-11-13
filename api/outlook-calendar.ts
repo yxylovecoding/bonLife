@@ -17,6 +17,23 @@ async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Cache-Control', 'private, no-store');
   if (!sameOrigin(req)) return res.status(403).json({ error: '请求来源无效' });
   if (!await authOk(req)) return res.status(401).json({ error: 'unauthorized' });
+  if (req.query?.app === 'google') {
+    const google = await import('./_googleCalendar.js');
+    try {
+      if (req.method === 'GET') return res.status(200).json(await google.googleCalendarStatus());
+      if (req.method === 'DELETE') { await google.disconnectGoogleCalendar(); return res.status(200).json({ connected: false }); }
+      if (req.method !== 'PUT') return res.status(405).json({ error: '请求方式无效' });
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+      const connection = await kv.get<Connection>(CONNECTION_KEY);
+      if (!connection) return res.status(400).json({ error: '请先连接 Outlook 订阅' });
+      const input = decryptOutlookConnection(connection.encrypted, (process.env.SYNC_SECRET || '').trim());
+      return res.status(200).json(await google.connectGoogleCalendar(body?.url, body?.secret, input.sources));
+    } catch (error) {
+      const message = error instanceof Error && /^(Google |请先连接|服务端连接)/.test(error.message)
+        ? error.message : 'Google 备用日历连接失败';
+      return res.status(502).json({ error: message });
+    }
+  }
   if (!['GET', 'POST', 'PUT', 'DELETE'].includes(req.method || '')) return res.status(405).json({ error: 'method not allowed' });
   const secret = (process.env.SYNC_SECRET || '').trim();
   if (!hasRulePolicy()) return withRulePolicy(await readSchedulingRules(), () => handler(req, res));

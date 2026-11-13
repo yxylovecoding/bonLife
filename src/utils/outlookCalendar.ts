@@ -65,6 +65,7 @@ export function normalizeOutlookWishEvents(input: unknown): OutlookWishEvent[] {
     .map((event) => { const key = JSON.stringify([event.calendar, event.uid, event.recurrenceId ?? '']); return [key, { ...event, key }]; })).values()];
 }
 export interface OutlookSnapshot {
+  provider?: 'outlook' | 'google';
   ruleOrder?: SchedulingRuleId[];
   ruleCandidates?: Record<string, SchedulingRuleId[]>;
   startDate: string;

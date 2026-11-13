@@ -37,6 +37,20 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe('Outlook 连接接口', () => {
+  it.each(['GET', 'PUT', 'DELETE'])('Google 备用 %s 沿用账号鉴权与同源保护', async method => {
+    authenticated.mockResolvedValue(false);
+    expect((await call(method, {}, { app: 'google' })).status).toBe(401);
+    authenticated.mockResolvedValue(true); sameOrigin.mockReturnValue(false);
+    expect((await call(method, {}, { app: 'google' })).status).toBe(403);
+    expect(fetch).not.toHaveBeenCalled(); expect(data.size).toBe(0);
+  });
+  it('Google 未连接状态不回显凭据，拒绝缺少原日历的连接', async () => {
+    const result = await call('GET', undefined, { app: 'google' });
+    expect(result.body).toEqual({ connected: false, sources: [] });
+    expect(result.headers['Cache-Control']).toBe('private, no-store');
+    expect((await call('PUT', { url: 'private', secret: 'private' }, { app: 'google' })).status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled(); expect(data.size).toBe(0);
+  });
   it('上游故障保留连接和已保存日历，并提示暂不可用而非让用户重连', async () => {
     await call('PUT', input);
     const previous = new Map(data);

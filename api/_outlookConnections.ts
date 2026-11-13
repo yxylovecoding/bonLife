@@ -27,6 +27,9 @@ export async function readOutlookConnections(): Promise<OutlookConnectionSummary
         ...(snapshots?.connectionId === connection.id && snapshots.requestedAt ? { syncedAt: new Date(snapshots.requestedAt).toISOString() } : {}) }));
     } catch { result.push({ id: 'subscription', name: '日历订阅', kind: 'subscription', connected: true, error: '连接信息暂不可用' }); }
   } else result.push({ id: 'subscription', name: '日历订阅', kind: 'subscription', connected: false });
+  const google = await (await import('./_googleCalendar.js')).googleCalendarStatus();
+  if (google.connected) result.push({ id: 'google', name: 'Google 备用日历', kind: 'subscription', connected: google.connected,
+    syncedAt: google.syncedAt, error: google.error });
   result.push({ id: 'period', name: '日历 · 经期订阅', kind: 'period', connected: Boolean(life),
     error: life && periodStatus?.connectionId === life.id && periodStatus.error ? '经期订阅暂时读取失败，请重试' : undefined,
     ...(life && period?.connectionId === life.id ? { syncedAt: period.syncedAt } : {}) });

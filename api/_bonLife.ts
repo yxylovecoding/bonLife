@@ -2,7 +2,7 @@ import ICAL from 'ical.js';
 import { kv } from './_accountKv.js';
 import { fetchCalendar, parseOutlookCalendar, decryptOutlookConnection, calendarReadFailure, calendarReadAdvice } from './_outlookCalendar.js';
 import { periodDays, reconcilePeriodEvents, type PeriodEvent } from '../src/utils/bonLife.js';
-import { isPeriodCalendarTitle } from '../src/utils/outlookCalendar.js';
+import { isPeriodCalendarTitle, type OutlookDayEvent } from '../src/utils/outlookCalendar.js';
 
 export const LIFE_CONNECTION_KEY = 'bonlife:outlook-connection:v1';
 export interface LifeConnection { id: string; encrypted: string }
@@ -27,6 +27,10 @@ export function parsePeriodCalendar(text: string, year: number) {
     { timezone: 'Asia/Shanghai', includeFree: true });
   const root = new ICAL.Component(ICAL.parse(text));
   const seenUids = root.getAllSubcomponents('vevent').map((event) => String(event.getFirstPropertyValue('uid') || '')).filter(Boolean);
+  return periodEvents(events, seenUids);
+}
+
+function periodEvents(events: OutlookDayEvent[], seenUids: string[]) {
   const localDay = (instant: number) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date(instant));
   return { seenUids, events: events.filter((event) => isPeriodCalendarTitle(event.title)).map((event) => {
     if (!event.uid) throw new Error('日程标识缺失');
@@ -53,9 +57,28 @@ async function readPeriodCalendarText(connection: LifeConnection) {
 }
 
 export async function readPeriodCalendar(connection: LifeConnection, year: number) {
-  const text = await readPeriodCalendarText(connection);
-  try { return parsePeriodCalendar(text, year); }
-  catch (error) { throw new Error(`Outlook 日历读取失败，${calendarReadAdvice(error)}`); }
+  try { return (await readPeriodWindows(connection, [year]))[0]; }
+  catch (error) {
+    if (error instanceof Error && error.message.startsWith('Outlook 日历读取失败')) throw error;
+    throw new Error(`Outlook 日历读取失败，${calendarReadAdvice(error)}`);
+  }
+}
+
+async function readPeriodWindows(connection: LifeConnection, years: number[]) {
+  try {
+    const text = await readPeriodCalendarText(connection);
+    return years.map(year => parsePeriodCalendar(text, year));
+  } catch (error) {
+    const input = decryptOutlookConnection(connection.encrypted, (process.env.SYNC_SECRET || '').trim());
+    const { readGoogleCalendarSources } = await import('./_googleCalendar.js');
+    const backup = await readGoogleCalendarSources([{ name: '日历', url: input.playUrl, kind: 'calendar' }],
+      `${Math.min(...years) - 1}-11-01`, `${Math.max(...years) + 1}-01-01`).catch(() => null);
+    if (!backup) throw error;
+    const events = backup[0].events;
+    const seenUids = [...new Set(events.map(event => event.uid).filter((uid): uid is string => Boolean(uid)))];
+    return years.map(year => periodEvents(events.filter(event => event.startDate.slice(0, 10) < `${year + 1}-01-01`
+      && event.endDate.slice(0, 10) >= `${year - 1}-11-01`), seenUids));
+  }
 }
 
 export async function syncLifePeriods(connection: LifeConnection, year: number) {
@@ -94,12 +117,11 @@ export async function syncRecentLifePeriods(now = new Date()) {
     const year = Number(new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(now).slice(0, 4));
     const years = [year - 1, year, year + 1].filter((value) => value >= 1900 && value <= 2200);
     const requestedAt = Date.now();
-    const [text, previous] = await Promise.all([
-      readPeriodCalendarText(connection), Promise.all(years.map((value) => kv.get<PeriodSnapshot>(periodsKey(value)))),
+    const [parsed, previous] = await Promise.all([
+      readPeriodWindows(connection, years), Promise.all(years.map((value) => kv.get<PeriodSnapshot>(periodsKey(value)))),
     ]);
     // Fetch once and validate every window before writing any snapshots. Previous-year
     // storage preserves late edits in January; next-year storage covers December crossings.
-    const parsed = years.map((value) => parsePeriodCalendar(text, value));
     const settled = await Promise.allSettled(years.map((value, index) => saveLifePeriods(connection, value, parsed[index], previous[index], requestedAt)));
     const results = settled.map((result) => {
       if (result.status === 'rejected') throw result.reason;

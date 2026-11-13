@@ -85,7 +85,8 @@ export async function saveOutlookSnapshot(connection: OutlookConnection, snapsho
       snapshots: replaceSnapshotWindow(previous?.snapshots ?? [], archived) };
     // Publish the calendar and cache together; uploads can never see only half of this update.
     await kv.mset({ [CALENDAR_KEY]: calendar, [SNAPSHOTS_KEY]: snapshots,
-      [OUTLOOK_READ_STATUS_KEY]: { connectionId: connection.id, syncedAt: new Date(requestedAt).toISOString() },
+      [OUTLOOK_READ_STATUS_KEY]: { connectionId: connection.id, syncedAt: new Date(requestedAt).toISOString(),
+        ...(snapshot.provider ? { provider: snapshot.provider } : {}) },
       ...(replaceConnection ? { [OUTLOOK_CONNECTION_KEY]: connection } : {}) });
     return calendar;
   });

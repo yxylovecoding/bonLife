@@ -465,7 +465,8 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             : visibilityDecision(id, task, { now, timeZone: connection.timeZone || 'Asia/Shanghai', ...visibility }) !== null).map(t => t.id), 'hidden');
         } else draft.protect(id, candidates.filter(applies).map(t => t.id));
       } });
-      run.calendar = { state: calendarError ? 'unavailable' : calendarEvidence ? 'fresh' : 'saved', checkedAt: calendarCheckedAt };
+      run.calendar = { state: calendarError ? 'unavailable' : calendarEvidence ? 'fresh' : 'saved', checkedAt: calendarCheckedAt,
+        ...(calendarEvidence?.provider ? { provider: calendarEvidence.provider } : {}) };
       if (options.scope !== 'visibility' && !sleeping && run.results.some(result => result.id.startsWith('calendar-') && handlers[result.id] && result.status !== 'success')) {
         for (const result of run.results) if (result.status === 'success' && (calendarDependent.has(result.id) || result.id.startsWith('outlook-'))) {
           result.status = 'skipped'; result.reason = '日历场景结果未确认，保留原排期';

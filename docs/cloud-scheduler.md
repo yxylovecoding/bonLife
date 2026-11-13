@@ -27,6 +27,8 @@ Cloudflare Workers Free + SQLite Durable Object 队列负责触发，Render 免�
 
 Worker 固定调用 Render 服务地址，不接受请求方提供目标 URL、任意 action 或邮件指令。公开 HTTP 入口全部检查独立调度密钥。应用的 `scheduler=1` 只在 原有 CRON 或专用调度授权通过后返回精简响应，Cloudflare 不存储应用记录或错误正文。
 
+2026-11-13：已通过原 Worker 所属账号发布版本 `7a93667a-6c1f-4dbc-8e38-0b2fde6d0ac3`。保留原 Durable Object、三条 Cron、Render ORIGIN、月度备份及所有现有密钥；上线部分完成响应识别，未新增定时任务。
+
 ## 检查与恢复
 
 - BonLog 账号所有者可通过已登录的 `GET /api/ticktick-trips?action=scheduler-status` 读取同一队列的脱敏状态；只返回触发时间、阶段、状态、HTTP 状态和固定失败类别，不触发任务，也不返回密钥或业务记录。

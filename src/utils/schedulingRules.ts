@@ -70,7 +70,7 @@ export interface SchedulingRun {
   results: SchedulingRuleResult[];
   groups?: SchedulingRuleGroup[];
   names?: Partial<Record<SchedulingRuleId, string>>;
-  calendar?: { state: 'fresh' | 'unavailable' | 'saved'; checkedAt: string };
+  calendar?: { state: 'fresh' | 'unavailable' | 'saved'; checkedAt: string; provider?: 'outlook' | 'google' };
 }
 export const ruleIds = SCHEDULING_RULES.map(rule => rule[0]);
 export const ruleTitle = (id: SchedulingRuleId, config?: Pick<SchedulingRuleConfig, 'names'>) => config?.names?.[id] ?? SCHEDULING_RULES.find(rule => rule[0] === id)?.[1] ?? id;

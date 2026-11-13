@@ -6,6 +6,7 @@ const when = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month
 const time = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false });
 export default function LifePlanDetails({ plan }: { plan: TickTickPlanDetails }) {
   const b = plan.breakdown;
+  const calendarName = plan.rules?.calendar?.provider === 'google' ? 'Google 订阅副本' : 'Outlook 日程';
   const plannedMinutes = plan.selected.reduce((sum, task) => sum + task.minutes, 0);
   const importantTotalMinutes = b ? b.important.reduce((sum, task) => sum + task.minutes, 0) : 0;
   const importantOccupiedMinutes = b?.importantOccupiedMinutes ?? importantTotalMinutes;
@@ -23,11 +24,11 @@ export default function LifePlanDetails({ plan }: { plan: TickTickPlanDetails })
           <div className="life-plan-time"><dt>可排期时间</dt><dd>{minuteText(b.windowMinutes)}</dd></div>
         </dl>
         <details className="life-plan-collapsible">
-          <summary><span>Outlook 日程 · 共 {b.calendarEvents?.length ?? 0} 项 · 占用可排期时间 {minuteText(b.occupiedMinutes)}</span></summary>
+          <summary><span>{calendarName} · 共 {b.calendarEvents?.length ?? 0} 项 · 占用可排期时间 {minuteText(b.occupiedMinutes)}</span></summary>
           {b.calendarEvents?.length ? <ul className="life-plan-tasks">{b.calendarEvents.map((event, index) => <li key={`${event.start}:${event.title}:${index}`}>
             <div><span>{event.title || '未命名日程'}</span><span>{minuteText((Date.parse(event.end) - Date.parse(event.start)) / 60_000)}</span></div>
             <p>{time.format(new Date(event.start))}—{time.format(new Date(event.end))}</p>
-          </li>)}</ul> : <p className="life-plan-meta">暂无 Outlook 日程。</p>}
+          </li>)}</ul> : <p className="life-plan-meta">暂无日程。</p>}
         </details>
         <dl className="life-plan-ledger">
           <div className="life-plan-time life-plan-time-after-calendar"><dt>扣除日程后剩余</dt><dd>{minuteText(b.freeMinutes)}</dd></div>
