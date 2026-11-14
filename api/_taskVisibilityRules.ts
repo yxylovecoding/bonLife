@@ -8,7 +8,7 @@ import { hairWashHidden, readingHidden, nightRoutineHidden, timedTaskHidden, has
 import type { TickTickTask } from './_ticktickTrips.js';
 import { isPendingTickTickTask } from './_ticktickTaskState.js';
 import type { SchedulingRuleId } from '../src/utils/schedulingRules.js';
-import { hasTaskLocation, taskLocationAllowed } from './_ticktickLocation.js';
+import { hasTaskLocation, taskLocationAllowed, taskLocationUnavailable } from './_ticktickLocation.js';
 
 export interface LocationVisibility { names: string[]; today: string[]; unknown: boolean; calendarState?: unknown; date?: string }
 export async function readLocationVisibility(today: string, calendarState?: unknown): Promise<LocationVisibility> {
@@ -41,6 +41,7 @@ export async function readLocationVisibility(today: string, calendarState?: unkn
       dayOverrides: { ...state.dayOverrides, [today]: {} } } };
 }
 export function locationTaskHidden(task: TickTickTask, locations: LocationVisibility): boolean | null {
+  if (locations.calendarState && locations.date && taskLocationUnavailable(task, locations.calendarState, locations.date)) return null;
   if (locations.calendarState && locations.date) return hasTaskLocation(task, locations.calendarState)
     ? !taskLocationAllowed(task, locations.calendarState, locations.date) : null;
   const tags = (task.tags ?? []).map(normalizedCityName).filter(tag => locations.names.includes(tag));

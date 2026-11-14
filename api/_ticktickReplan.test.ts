@@ -4,7 +4,7 @@ import { runRuleReplan } from './_ruleReplan';
 import { replanRemainingToday } from './_ticktickReplan';
 import { defaultRuleConfig, readRuleConfig, removeSchedulingRule, type SchedulingRuleId } from '../src/utils/schedulingRules';
 import { DAILY_PLAN_KEY, DAILY_PLAN_SETTINGS_KEY } from './_ticktickDailyPlan';
-import { BEIJING, GUANGZHOU } from '../src/utils/internship';
+import { BEIJING, GUANGZHOU, DEFAULT_INTERNSHIP_RULES } from '../src/utils/internship';
 import type { TickTickTask } from './_ticktickTrips';
 
 const m = vi.hoisted(() => ({ data: new Map<string, any>(), tasks: [] as TickTickTask[], history: [] as TickTickTask[], abandoned: [] as TickTickTask[], abandonedRead: vi.fn(),
@@ -55,6 +55,40 @@ const config = (first: SchedulingRuleId[], predecessors = {}) => { const value =
 const status = (result: any, id: SchedulingRuleId) => result.rules.results.find((r: any) => r.id === id);
 
 describe('日历故障隔离与恢复', () => {
+  it('工休未确认时保留班任务日期与显隐，不能在清理旧隐藏时释放', async () => {
+    m.realLocations = true;
+    m.data.set('app-config', { config: { schoolCity: BEIJING } });
+    m.data.set('calendar-tags', {});
+    m.tasks = [task('hidden', { tags: ['always-today', '班', 'hidden'] }), task('visible', { tags: ['班'],
+      isAllDay: false, startDate: `${day}T10:00:00+0800`, dueDate: `${day}T10:00:00+0800` })];
+    m.data.set(`ticktick:visibility-owned:v1:${hash}`, { hidden: 'visibility-location' });
+    const originals = structuredClone(m.tasks);
+    await runRuleReplan({ scope: 'hourly' });
+    expect(m.tasks).toEqual(originals); expect(m.write).not.toHaveBeenCalled();
+  });
+  it.each(['full', 'hourly', 'visibility'] as const)('%s 沿用 boncal 休息日阻止班任务显示，固定今日不能覆盖工休', async scope => {
+    const rest = '2026-11-14', next = '2026-11-16';
+    vi.setSystemTime(new Date(`${rest}T18:00:00+08:00`)); m.realLocations = true;
+    // The work tag belongs to 课, outside the location subtree.
+    m.tagsRead.mockResolvedValue([{ name: '地点' }, { name: '课' }, { name: '广州', parent: '地点' }, { name: '班', parent: '课' }]);
+    m.data.set('app-config', { config: { schoolCity: BEIJING, internshipPeriods: [{ id: 'work', profileId: 'p', profileName: '公司', revision: 1,
+      startDate: rest, endDate: '2026-11-17', city: GUANGZHOU, schoolCity: BEIJING, rules: { ...DEFAULT_INTERNSHIP_RULES, salary: 100 } }] } });
+    m.data.set('calendar-tags', { dayOverrides: { [next]: { attendance: 'work' } } });
+    config(['visibility-timed', 'always-today', 'visibility-location']);
+    m.tasks = [task('work', { title: '考勤签到', tags: ['always-today', '当天', '班', '广州', 'routine'], priority: 5,
+      isAllDay: false, startDate: `${rest}T10:00:00+0800`, dueDate: `${rest}T10:00:00+0800`,
+      reminders: ['TRIGGER:-PT0S'], repeatFlag: 'RRULE:FREQ=DAILY;INTERVAL=1' })];
+    const original = structuredClone(m.tasks[0]);
+    const result = await runRuleReplan({ scope });
+    expect(status(result, 'visibility-location')).toMatchObject({ status: 'success', deferred: 0 });
+    const target = scope === 'visibility' ? rest : next;
+    expect(m.tasks[0]).toEqual({ ...original, tags: [...original.tags!, 'hidden'], startDate: `${target}T10:00:00+0800`, dueDate: `${target}T10:00:00+0800` });
+    if (scope === 'visibility') await runRuleReplan({ scope: 'hourly' });
+    vi.setSystemTime(new Date(`${next}T09:00:00+08:00`));
+    await runRuleReplan({ scope }); expect(m.tasks[0].tags).toContain('hidden');
+    vi.setSystemTime(new Date(`${next}T10:01:00+08:00`));
+    await runRuleReplan({ scope }); expect(m.tasks[0].tags).toEqual(original.tags);
+  });
   const fail = () => {
     m.data.set('outlook:calendar-connection:v1', { id: 'outlook', encrypted: 'fixture' });
     m.fullOutlook.mockRejectedValue(new Error('private provider failure'));
@@ -608,6 +642,7 @@ describe('城市待办日期', () => {
 
 describe('残留完成时间的固定今日任务', () => {
   it.each(['full', 'hourly', 'visibility'] as const)('%s 将明确未完成的子任务移到今天，写后确认且重复执行不重写', async scope => {
+    m.data.set('calendar-tags', { tagMap: { [day]: 'intern' } });
     const info = vi.spyOn(console, 'info');
     const original = task('reopened', { title: 'transformer', parentId: 'parent', tags: ['always-today', '班'],
       dueDate: '2026-11-02T00:00:00+0800', completedTime: '2026-09-17T04:14:43.000+0000', content: '(1.5h)', priority: 3 });

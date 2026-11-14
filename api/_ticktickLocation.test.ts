@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BEIJING, DEFAULT_INTERNSHIP_RULES, GUANGZHOU, resolveCalendarState } from '../src/utils/internship';
-import { nextTaskLocationDate, taskLocationAllowed } from './_ticktickLocation';
+import { nextTaskLocationDate, taskLocationAllowed, taskLocationUnavailable } from './_ticktickLocation';
 import { LOCATION_HIDDEN_KEY, syncTickTickLocationVisibility } from './_ticktickLocationVisibility';
 import { planTickTickDay } from './_ticktickDailyPlan';
 import { exerciseTarget } from './_ticktickExercise';
@@ -45,6 +45,55 @@ it('旧地点显隐入口也保留当天地点读取失败的任务，不能把�
 afterEach(() => vi.useRealTimers());
 
 describe('地点匹配与日期规则分离', () => {
+  const workCalendar = (calendar: Record<string, unknown> = {}) => ({ ...resolveCalendarState({ config: { schoolCity: BEIJING,
+    internshipPeriods: [{ id: 'work', profileId: 'p', profileName: '公司', revision: 1,
+      startDate: '2026-11-13', endDate: '2026-11-18', city: GUANGZHOU, schoolCity: BEIJING,
+      rules: { ...DEFAULT_INTERNSHIP_RULES, salary: 100 } }] } }, calendar), locationTags: ['广州', '北京', '寄', '居', '旅'] });
+  it('班是独立工休条件，休息日不能被居或城市匹配放行，不继承父任务标签', () => {
+    const state = workCalendar(), work = task('work', { tags: ['always-today', '班', '广州', '居'] });
+    expect(state.tagMap['2026-11-14']).toBe('intern');
+    expect(state.workingMap['2026-11-14']).toBe(false);
+    expect(taskLocationAllowed(work, state, '2026-11-14')).toBe(false);
+    expect(nextTaskLocationDate(work, state, '2026-11-14')).toBe('2026-11-16');
+    expect(taskLocationAllowed({ ...work, tags: ['班', '北京'] }, state, '2026-11-16')).toBe(false);
+    expect(taskLocationAllowed({ ...work, tags: ['班'] }, state, '2026-11-14')).toBe(false);
+    expect(taskLocationAllowed({ ...work, tags: ['广州', '居'], parentId: 'work' }, state, '2026-11-14')).toBe(true);
+  });
+  it('班沿用 boncal 调休及手动出勤，不以周一到周五或 intern 标签替代', () => {
+    const work = task('work', { tags: ['班'] });
+    const state = workCalendar({ holidayDataByYear: { 2026: { '2026-11-14': { isOffDay: false }, '2026-11-16': { isOffDay: true } } },
+      dayOverrides: { '2026-11-15': { attendance: 'work' }, '2026-11-17': { attendance: 'rest' } }, tagMap: { '2026-11-18': 'home' } });
+    expect(['2026-11-14', '2026-11-15'].map(date => taskLocationAllowed(work, state, date))).toEqual([true, true]);
+    expect(['2026-11-16', '2026-11-17', '2026-11-18'].map(date => taskLocationAllowed(work, state, date))).toEqual([false, false, false]);
+    const unknown = { ...state, workingMap: { ...state.workingMap, '2026-11-14': undefined } };
+    expect(taskLocationUnavailable(work, unknown, '2026-11-14')).toBe(true);
+    expect(nextTaskLocationDate(work, unknown, '2026-11-14')).toBeNull();
+  });
+  it('普通轮换不会在休息日挑选班任务', () => {
+    const rest = '2026-11-14', state = workCalendar();
+    const candidates = [task('work', { tags: ['班', '广州'], priority: 3, dueDate: `${rest}T00:00:00+0800` }),
+      task('ordinary', { tags: [], priority: 3, dueDate: `${rest}T00:00:00+0800` })];
+    const plan = planTickTickDay({ tasks: candidates, today: rest, now: new Date(`${rest}T10:00:00+08:00`), calendarState: state,
+      state: { connectionId: 'test', history: [], deadlines: {} }, budgetMinutes: 240 });
+    expect(plan.dates.get('work')).toBe('2026-11-16');
+    expect(plan.dates.get('ordinary')).toBe(rest);
+  });
+  it('固定今日的班任务移到下一工作日并隐藏，工作日到点恢复，保留其他字段', async () => {
+    const state = workCalendar(), rest = '2026-11-14';
+    const original = task('work', { title: '考勤签到', tags: ['always-today', '当天', '班', '广州', 'routine'],
+      isAllDay: false, startDate: `${rest}T10:00:00+0800`, dueDate: `${rest}T10:00:00+0800`,
+      reminders: ['TRIGGER:-PT0S'], priority: 5, repeatFlag: 'RRULE:FREQ=DAILY;INTERVAL=1' });
+    const f = fixture([original]);
+    await syncTickTickAlwaysToday(f.api, { calendarState: state, today: rest });
+    const expected = { ...original, startDate: '2026-11-16T10:00:00+0800', dueDate: '2026-11-16T10:00:00+0800' };
+    expect(f.stored.get('work')).toEqual(expected);
+    for (const date of [`${rest}T18:00`, '2026-11-16T09:00']) {
+      await syncTickTickLocationVisibility(f.api, { calendarState: state, now: new Date(`${date}:00+08:00`) });
+      expect(f.stored.get('work')).toEqual({ ...expected, tags: [...original.tags!, 'hidden'] });
+    }
+    await syncTickTickLocationVisibility(f.api, { calendarState: state, now: new Date('2026-11-16T10:01:00+08:00') });
+    expect(f.stored.get('work')).toEqual(expected);
+  });
   it('以地点目录为完整范围，新增未知子标签不误当无约束，父标签只分组', () => {
     const state = { ...calendarState, locationTags: ['寄', '居', '旅', '北京', '外地住所'] };
     expect(taskLocationAllowed(task('unknown', { tags: ['外地住所'] }), state, today)).toBe(false);

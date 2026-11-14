@@ -120,11 +120,13 @@ export function resolveCalendarState(configState: unknown, calendarState: unknow
   const holidayDataByYear = calendar.holidayDataByYear ?? {};
   const tagMap = resolvedTagMap(calendar.tagMap ?? {}, { config, dayOverrides, holidayDataByYear });
   // Derived only for this read; never persist these maps over the source calendar.
-  const cityMap = Object.fromEntries([...new Set([...Object.keys(tagMap), ...Object.keys(dayOverrides)])]
-    .filter(validDate).map(date => [date, resolveDailyContext(date, tagMap[date], { config, dayOverrides, holidayDataByYear }).city]));
+  const days = [...new Set([...Object.keys(tagMap), ...Object.keys(dayOverrides)])].filter(validDate)
+    .map(date => resolveDailyContext(date, tagMap[date], { config, dayOverrides, holidayDataByYear }));
+  const cityMap = Object.fromEntries(days.map(day => [day.date, day.city]));
+  const workingMap = Object.fromEntries(days.map(day => [day.date, day.working]));
   const locationCities = [BEIJING, GUANGZHOU, config.schoolCity, config.homeCity, config.internshipLegacyCity,
     ...(config.schoolPeriods ?? []).map(p => p.city),
     ...(config.internshipPeriods ?? []).flatMap(p => [p.city, p.schoolCity]), ...Object.values(cityMap)]
     .map(readSceneCity).filter((city): city is SceneCity => city !== null);
-  return { ...calendar, tagMap, cityMap, locationCities };
+  return { ...calendar, tagMap, cityMap, workingMap, locationCities };
 }

@@ -15,7 +15,7 @@ import { visibilityInputs, visibilityRules, visibilityDecision, visibilityReleas
 import { sleepWindow, sleepTagStateKey } from './_ticktickSleepTags.js';
 import { hasHiddenTag } from './_ticktickNightRoutine.js';
 import { withHiddenTag } from './_ticktickHiddenTag.js';
-import { hasTaskLocation, nextTaskLocationDate, taskCityTags, taskLocationAllowed } from './_ticktickLocation.js';
+import { hasTaskLocation, nextTaskLocationDate, taskCityTags, taskLocationAllowed, taskLocationUnavailable } from './_ticktickLocation.js';
 import { hairWashLocationDate } from './_hairWashLocation.js';
 import { readTickTickLocationTags } from './_ticktickLocationTags.js';
 import { syncOutlookCalendar, saveOutlookSnapshot, OUTLOOK_CONNECTION_KEY, OUTLOOK_READ_STATUS_KEY, type OutlookConnection } from './_outlookSync.js';
@@ -218,7 +218,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         plan(id, async branch => {
           const report = visibilityReports[id] = { matched: 0, deferred: 0, reason: undefined as string | undefined, conflicts: [] as NonNullable<SchedulingRuleResult['conflicts']> };
           for (const task of draft.values().filter(pending)) {
-            if (locationUnavailable() && needsLocation(task)) {
+            if (locationUnavailable() && needsLocation(task) || taskLocationUnavailable(task, calendarState, today)) {
               if (id === 'visibility-location' || visibilityDecision(id, task, { now, timeZone: connection.timeZone || 'Asia/Shanghai', ...visibility }) !== null) {
                 report.deferred++; report.reason = '地点未确认，保留受影响待办显隐';
                 draft.protect(id, [task.id], 'hidden');
@@ -292,7 +292,8 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       }
       if (options.scope !== 'visibility' || ['daily', 'all'].includes(options.visibilityKind ?? '')) {
         plan('always-today', async branch => {
-          const held = new Set(locationUnavailable() ? locationTasks().filter(isAlwaysTodayTask).map(t => t.id) : []);
+          const held = new Set(locationTasks().filter(task => isAlwaysTodayTask(task)
+            && (locationUnavailable() || taskLocationUnavailable(task, calendarState, today))).map(t => t.id));
           draft.protect('always-today', held);
           const candidates = draft.values().filter(task => !held.has(task.id));
           await syncTickTickAlwaysToday(branch.api, { tasks: candidates, today, calendarState, protectedTaskIds: abandonedToday });
@@ -616,7 +617,8 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       // Removing a city tag releases only a tag previously owned by this system.
       if (visibility.locations && run.results.find(r => r.id === 'visibility-location')?.status === 'success') {
         const cleanup = draft.branch('visibility-location');
-        for (const task of draft.values()) if (previousOwned[task.id] === 'visibility-location' && !budgetHidden[task.id] && !visibilityOwners[task.id] && pending(task)) {
+        for (const task of draft.values()) if (previousOwned[task.id] === 'visibility-location' && !budgetHidden[task.id] && !visibilityOwners[task.id] && pending(task)
+          && !taskLocationUnavailable(task, calendarState, today)) {
           await cleanup.api.updateTask(task.id, { ...task, tags: withHiddenTag(task.tags, false) });
         }
         cleanup.accept();
