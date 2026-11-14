@@ -73,13 +73,26 @@ describe('response and retry boundary', () => {
     expect(await callAction('hourly-replan', env, attempt)).toMatchObject({ outcome: 'retry', counter: 'warmups', http: 502 });
     expect(await callAction('hourly-replan', env, { ...attempt, warmups: 1 })).toMatchObject({ outcome: 'retry', counter: 'warmups', http: 0 });
     expect(await callAction('hourly-replan', env, { ...attempt, warmups: 2 })).toEqual({ outcome: 'success' });
-    expect(fetcher.mock.calls.slice(0, 3).map(([url]) => new URL(String(url)).pathname)).toEqual(['/healthz', '/healthz', '/healthz']);
-    for (const [, options] of fetcher.mock.calls.slice(0, 3)) {
-      expect(options.headers).toBeUndefined(); expect(options.redirect).toBe('manual');
+    expect(fetcher.mock.calls.slice(0, 3).map(([url]) => new URL(String(url)).pathname)).toEqual(['/healthz', '/', '/healthz']);
+    for (const [url, options] of fetcher.mock.calls.slice(0, 3)) {
+      expect(new URL(String(url)).searchParams.get('_scheduler_probe')).toBe(String(Date.now()));
+      expect(options.headers['User-Agent']).toBe('bonbills-scheduler/1.0');
+      expect(options.headers['Cache-Control']).toBe('no-cache');
+      expect(options.headers.Authorization).toBeUndefined(); expect(options.redirect).toBe('manual');
     }
     expect(new URL(String(fetcher.mock.calls[3][0])).searchParams.get('action')).toBe('hourly-replan');
     expect(fetcher.mock.calls[3][1].headers.Authorization).toBe('Bearer PRIVATE');
   });
+  it.each([Response.json({ ok: true }), new Response('<html>loading</html>', { headers: { 'content-type': 'text/html' } })])
+    ('always rechecks health after a successful wake request', async response => {
+      const fetcher = vi.fn().mockResolvedValue(response);
+      vi.stubGlobal('fetch', fetcher);
+      expect(await callAction('hourly-replan', { ORIGIN: 'https://bonbills.onrender.com', SCHEDULER_RUN_SECRET: 'PRIVATE' },
+        { ...attempt, warmups: 1 })).toMatchObject({ outcome: 'retry', counter: 'warmups', http: 200 });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(new URL(String(fetcher.mock.calls[0][0])).pathname).toBe('/');
+      expect(fetcher.mock.calls[0][1].headers.Authorization).toBeUndefined();
+    });
   it('bounds readiness retries and rejects a loading page without running a task', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response('<html>loading</html>', { status: 200 }));
     vi.stubGlobal('fetch', fetcher);
@@ -221,10 +234,14 @@ describe('durable serial execution', () => {
   it('persists readiness retries across alarms without replaying the business action', async () => {
     const f = fixture(); f.env.ORIGIN = 'https://bonbills.onrender.com';
     const fetcher = vi.fn().mockResolvedValueOnce(new Response('Bad Gateway', { status: 502 }))
+      .mockResolvedValueOnce(new Response('<html>loading</html>'))
       .mockResolvedValueOnce(Response.json({ ok: true })).mockResolvedValueOnce(good());
     vi.stubGlobal('fetch', fetcher);
     await f.enqueue([manualJob('hourly', 'wake', Date.now())]); await f.tick();
     expect((await f.state()).jobs[0]).toMatchObject({ status: 'running', index: 0, attempt: { warmups: 1 } });
+    await f.tick(new SchedulerQueue(f.ctx, f.env));
+    expect((await f.state()).jobs[0]).toMatchObject({ status: 'running', index: 0, attempt: { warmups: 2 } });
+    expect(fetcher.mock.calls.some(([url]) => new URL(String(url)).pathname.startsWith('/api/'))).toBe(false);
     await f.tick(new SchedulerQueue(f.ctx, f.env));
     expect((await f.state()).jobs[0].status).toBe('success');
     expect(fetcher.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/api/ticktick-trips')).toHaveLength(1);

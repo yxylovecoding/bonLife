@@ -26,18 +26,26 @@ function logOrigin(phase, action, started, response, body, error) {
 async function waitForOrigin(env, attempt, action) {
   const origin = new URL(env.ORIGIN);
   if (!origin.hostname.endsWith('.onrender.com')) return null;
+  // A failed health probe has not sent a business operation. Give Render one
+  // ordinary page request to wake the free instance, then require health again
+  // on the next alarm. A loading page (even HTTP 200) never means ready.
+  const wake = attempt.warmups === 1;
+  const url = new URL(wake ? '/' : '/healthz', origin);
+  url.searchParams.set('_scheduler_probe', String(Date.now()));
   let status = 0;
   const started = Date.now();
   try {
-    const response = await fetch(new URL('/healthz', origin), {
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'bonbills-scheduler/1.0', 'Cache-Control': 'no-cache',
+        Accept: wake ? 'text/html' : 'application/json' },
       redirect: 'manual', signal: AbortSignal.timeout(10_000),
     });
     status = response.status;
     const body = await response.json().catch(() => null);
-    logOrigin('readiness', action, started, response, body);
-    if (status === 200 && body?.ok === true) return null;
+    logOrigin(wake ? 'wakeup' : 'readiness', action, started, response, body);
+    if (!wake && status === 200 && body?.ok === true) return null;
   } catch (error) {
-    logOrigin('readiness', action, started, undefined, undefined, error);
+    logOrigin(wake ? 'wakeup' : 'readiness', action, started, undefined, undefined, error);
     /* A readiness read is safe to retry; no task operation was sent. */
   }
   return (attempt.warmups || 0) < 12
