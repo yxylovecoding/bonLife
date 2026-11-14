@@ -8,7 +8,7 @@ export const RULE_CONFIG_KEY = 'ticktick:rules:v1';
 export const RULE_RUN_KEY = 'ticktick:rules:last-run:v1';
 export const PLAN_RUN_KEY = 'ticktick:rules:last-plan-run:v1';
 export class RuleDeferredError extends Error {
-  constructor() { super('日历不可用，保留原安排'); }
+  constructor(reason = '日程订阅不可用，保留原安排') { super(reason); }
 }
 const CONFIG_LOCK = 'ticktick:rules:write-lock:v1';
 export async function readSchedulingRules() {

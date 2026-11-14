@@ -43,9 +43,9 @@ import { TickTickOpenApiClient, decryptTickTickToken, readAllTickTickTasks, read
 
 import { isPendingTickTickTask as pending } from './_ticktickTaskState.js';
 const plusDay = (date: string) => new Date(Date.parse(`${date}T12:00:00Z`) + 86400000).toISOString().slice(0, 10);
-// Covers the existing 20:00 full sync -> 22:00/00:00 maintenance cadence.
-// A subsequent read failure invalidates this allowance immediately.
-const VISIBILITY_SOURCE_MAX_AGE = 6 * 60 * 60_000;
+// Period imports have their own freshness requirement. Saved boncal locations
+// remain usable independently of subscription health or the last import time.
+const PERIOD_SOURCE_MAX_AGE = 6 * 60 * 60_000;
 
 interface RuleReplanResult {
   busy: boolean; connected?: boolean; skipped?: string; updated?: number; rules?: SchedulingRun; rulesComplete?: boolean; partial?: boolean; error?: string;
@@ -103,7 +103,8 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       ]);
       const { rawConfig: configState, calendar: storedCalendar, tripSettings: tripState } = bonCalInput;
       let calendarState = resolveCalendarState(configState, storedCalendar);
-      let availability: OutlookAvailability | undefined, calendarError = false, calendarCheckedAt = now.toISOString();
+      let availability: OutlookAvailability | undefined, calendarError = false, locationError = false;
+      const calendarCheckedAt = now.toISOString();
       let calendarEvidence: import('../src/utils/outlookCalendar.js').OutlookSnapshot | undefined;
       let outlookSnapshot: Awaited<ReturnType<typeof syncOutlookCalendar>> | undefined;
       if (options.scope !== 'visibility') {
@@ -123,21 +124,15 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           if (outlookSnapshot?.connected) calendarState = resolveCalendarState(configState, applyOutlookSnapshotToState((storedCalendar ?? {}) as Record<string, unknown>, outlookSnapshot.snapshot, outlookSnapshot.policy, today));
         } catch {
           calendarError = true;
+          calendarState = resolveCalendarState(configState, storedCalendar);
+          calendarEvidence = undefined; outlookSnapshot = undefined; availability = undefined;
           const connected = await kv.get<OutlookConnection>(OUTLOOK_CONNECTION_KEY);
-          if (connected) await kv.set(OUTLOOK_READ_STATUS_KEY, { connectionId: connected.id, error: '日历不可用，保留原安排' });
+          if (connected) await kv.set(OUTLOOK_READ_STATUS_KEY, { connectionId: connected.id, error: '日程订阅不可用，保留原安排' });
         }
-      } else {
-        // Visibility never refreshes subscriptions. A known outage must not
-        // turn the saved date grid into confirmed current location evidence.
-        const [connected, status] = await Promise.all([kv.get<OutlookConnection>(OUTLOOK_CONNECTION_KEY),
-          kv.get<{ connectionId?: string; error?: string; syncedAt?: string }>(OUTLOOK_READ_STATUS_KEY)]);
-        const age = status?.syncedAt ? now.getTime() - Date.parse(status.syncedAt) : NaN;
-        calendarError = Boolean(connected && (status?.connectionId !== connected.id || status.error
-          || !Number.isFinite(age) || age < 0 || age > VISIBILITY_SOURCE_MAX_AGE
-          || calendarDateInTimeZone(status.syncedAt, 'Asia/Shanghai') !== today));
-        if (status?.syncedAt) calendarCheckedAt = status.syncedAt;
       }
-      try { calendarState = await readBonCalSchedulingState(calendarState, configState, today, bonCalInput); } catch { calendarError = true; }
+      // On subscription failure calendarState is still the saved boncal grid.
+      // Only a failure to resolve that grid invalidates location evidence.
+      try { calendarState = await readBonCalSchedulingState(calendarState, configState, today, bonCalInput); } catch { locationError = true; }
       if (locationTags !== undefined) calendarState = { ...calendarState, locationTags };
       const maintainsDates = options.scope !== 'visibility' || ['daily', 'all', 'night'].includes(options.visibilityKind ?? '');
       const runsRainReminder = options.scope !== 'visibility' && !options.specialty && !config.removed?.includes('rain-reminder');
@@ -167,7 +162,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         ]);
         const age = periods ? now.getTime() - Date.parse(periods.syncedAt) : NaN;
         periodError = Boolean(periodConnection && (periods?.connectionId !== periodConnection.id || periodStatus?.error
-          || !Number.isFinite(age) || age < 0 || age > VISIBILITY_SOURCE_MAX_AGE));
+          || !Number.isFinite(age) || age < 0 || age > PERIOD_SOURCE_MAX_AGE));
       }
       let template: TickTickTemplate | undefined;
       try { if (options.scope !== 'visibility' || ['night', 'all'].includes(options.visibilityKind ?? '')) template = await readConnectedTickTickTemplate(api, connection); } catch { /* Only template-dependent rules need this input. */ }
@@ -180,8 +175,8 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       const trips = buildTripSourcesFromSyncState(calendarState, tripState);
       console.info('[scheduling-ready]', JSON.stringify({ scope: options.scope, phase: 'template' }));
       const draft = new RuleTaskDraft(api, tasks, abandonedToday);
-      const visibility = options.specialty ? { journal: {}, locations: null } : await visibilityInputs(connection.projectId, today, calendarState);
-      if (calendarError) visibility.locations = null;
+      const visibility = await visibilityInputs(connection.projectId, today, calendarState);
+      if (locationError) visibility.locations = null;
       const locationUnavailable = () => !visibility.locations;
       const needsLocation = (task: TickTickTask) => hasTaskLocation(task, calendarState);
       const locationTasks = () => draft.values().filter(task => pending(task) && needsLocation(task));
@@ -206,11 +201,14 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       const enabledVisibility = config.order.filter(id => visibilityRules.includes(id) && !config.removed?.includes(id));
       const handlers: Partial<Record<SchedulingRuleId, RuleHandler>> = {};
       const calendarDependent = new Set<SchedulingRuleId>();
+      const locationDependent = new Set<SchedulingRuleId>();
       const plan = (id: SchedulingRuleId, callback: (branch: ReturnType<RuleTaskDraft['branch']>) => ReturnType<RuleHandler>,
-        sources: { history?: boolean; calendar?: boolean } = { history: true, calendar: true }) => {
+        sources: { history?: boolean; calendar?: boolean; location?: boolean } = { history: true, calendar: true, location: true }) => {
         if (sources.calendar) calendarDependent.add(id);
+        if (sources.location) locationDependent.add(id);
         handlers[id] = async () => {
           if (sources.calendar && calendarError) throw new RuleDeferredError();
+          if (sources.location && locationUnavailable()) throw new RuleDeferredError('boncal 地点未确认，保留原安排');
           if (sources.history && historyError) throw new Error('排期来源暂不可用');
           const branch = draft.branch(id);
           try { const outcome = await callback(branch); return { ...branch.accept(), ...outcome, ...visibilityReports[id] }; } catch (error) { branch.reject(); throw error; }
@@ -306,8 +304,11 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       }
       if (options.scope !== 'visibility' && !sleeping) {
         for (const [id, , , category] of SCHEDULING_RULES) if (category === 'calendar' || category === 'selection' || id === 'scene-eligibility') {
+          if (id === 'scene-eligibility') locationDependent.add(id);
           handlers[id] = async () => {
-            if (calendarError) throw new RuleDeferredError();
+            if (id === 'scene-eligibility') {
+              if (locationUnavailable()) throw new RuleDeferredError('boncal 地点未确认，保留原安排');
+            } else if (calendarError) throw new RuleDeferredError();
             if (category === 'selection' && historyError) throw new Error('数据未刷新');
             if (category !== 'calendar' || !calendarEvidence) return;
             const raw = (storedCalendar ?? {}) as { tagMap?: Record<string, string>; manualTagDates?: Record<string, boolean>; outlookApplied?: Record<string, { tag: string }> };
@@ -345,7 +346,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       if (options.scope !== 'visibility' && !sleeping) {
         // Spray separation constrains the final dates; it does not reserve an
         // unchanged date ahead of location, recurrence or ordinary rotation.
-        plan('sprays', async () => {}, { history: true, calendar: tasks.some(t => sprayKind(t) && needsLocation(t)) });
+        plan('sprays', async () => {}, { history: true, location: tasks.some(t => sprayKind(t) && needsLocation(t)) });
         plan('scene-date', async branch => {
           const values = draft.values();
           const wasCompleted = matchCompletedOccurrences(values, state.history.filter(record =>
@@ -370,7 +371,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             }
             if (date) await branch.api.updateTask(task.id, routineTaskPayload(task, date));
           }
-        });
+        }, { history: true, location: true });
       }
       if (options.scope === 'full' && !sleeping) {
         plan('repeat-date', async branch => {
@@ -379,7 +380,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             && routineRecurrence(t.repeatFlag) === 'long' && routineTaskDate(t)
             && taskLocationAllowed(t, calendarState, routineTaskDate(t)! > today ? routineTaskDate(t)! : today)
             && routineScenes(t, calendarState).some(scene => scene !== 'home' && targets[scene] === today)).map(t => t.id));
-        });
+        }, { history: true, location: true });
         plan('hair-follow', async branch => {
           const values = draft.values(), followers = values.filter(t => pending(t) && followsHairWash(t) && !isAlwaysTodayTask(t) && !isEyeDrops(t));
           const anchors = values.filter(t => pending(t) && t.title.normalize('NFKC').trim() === '洗头');
@@ -417,7 +418,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         }, { history: true, calendar: id === 'trips' });
         plan('period-reminder', async branch => { if (periodError) throw new Error('经期来源暂不可用'); await syncPeriodPredictionTask(branch.api, { connection, tasks: draft.values(), completedTasks: state.history, today }); }, { history: true });
         plan('vehicle-pickup', async () => {}, { history: true,
-          calendar: [...tasks, ...state.history].some(t => (isElectricVehiclePickup(t) || t.title === '电动车充电') && needsLocation(t)) });
+          location: [...tasks, ...state.history].some(t => (isElectricVehiclePickup(t) || t.title === '电动车充电') && needsLocation(t)) });
       }
       if (!sleeping && (options.scope === 'full' || options.specialty === 'swimming' || ['night', 'all'].includes(options.visibilityKind ?? ''))) {
         if (!options.specialty) for (const id of (options.scope === 'full' ? ['exercise', 'exercise-rollover'] : ['exercise-rollover']) as SchedulingRuleId[]) plan(id, async branch => {
@@ -426,12 +427,12 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             acceptsDate: (taskId, date) => routineTaskDate(draft.committedValues().find(t => t.id === taskId)!) === date });
           branch.claimDates(result.managedTaskIds);
           if (id === 'exercise') trainingDates = result.fixedDates;
-        }, { history: true, calendar: tasks.some(t => isExerciseTask(t) && needsLocation(t)) });
+        }, { history: true, location: tasks.some(t => isExerciseTask(t) && needsLocation(t)) });
         plan('swimming', async branch => {
           if (periodError) throw new Error('经期来源暂不可用');
           const { cycle, periods } = await readSwimmingCycle([Number(today.slice(0, 4)), Number(today.slice(0, 4)) + 1]);
           await postponeSwimmingTasks(branch.api, draft.values(), today, cycle, periods);
-        }, { history: true, calendar: tasks.some(t => t.title.includes('游泳') && needsLocation(t)) });
+        }, { history: true, location: tasks.some(t => t.title.includes('游泳') && needsLocation(t)) });
       }
       // Outlook writers consume final, confirmed task dates. They are deferred
       // effects of their rule nodes, never interleaved with date proposals.
@@ -475,7 +476,8 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       run.calendar = { state: calendarError ? 'unavailable' : calendarEvidence ? 'fresh' : 'saved', checkedAt: calendarCheckedAt,
         ...(calendarEvidence?.provider ? { provider: calendarEvidence.provider } : {}) };
       if (options.scope !== 'visibility' && !sleeping && run.results.some(result => result.id.startsWith('calendar-') && handlers[result.id] && result.status !== 'success')) {
-        for (const result of run.results) if (result.status === 'success' && (calendarDependent.has(result.id) || result.id.startsWith('outlook-'))) {
+        for (const result of run.results) if (result.status === 'success' && (calendarDependent.has(result.id)
+          || calendarEvidence && locationDependent.has(result.id) || result.id.startsWith('outlook-'))) {
           result.status = 'skipped'; result.reason = '日历场景结果未确认，保留原排期';
         }
       }
@@ -524,7 +526,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             .filter(id => allowed(id as SchedulingRuleId)) as SchedulingRuleId[]);
           const branch = draft.branch('scene-date', flexible);
           try {
-            if (!visibility.locations) throw new RuleDeferredError();
+            if (!visibility.locations) throw new RuleDeferredError('boncal 地点未确认，保留原安排');
             const schedule = readHairWashSchedule(draft.values());
             const swimEnabled = !config.removed?.includes('swimming');
             const needsSwimming = swimEnabled && followers.some(t => t.title.includes('游泳'));
@@ -562,7 +564,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
           const flexible = new Set<SchedulingRuleId>(['scene-date', 'repeat-date', 'daily-plan'].filter(id => allowed(id as SchedulingRuleId)) as SchedulingRuleId[]);
           const branch = draft.branch('sprays', flexible);
           try {
-            if (!visibility.locations && sprays.some(needsLocation)) throw new RuleDeferredError();
+            if (!visibility.locations && sprays.some(needsLocation)) throw new RuleDeferredError('boncal 地点未确认，保留原安排');
             const movable = new Set(sprays.filter(t => !abandonedToday.has(t.id)
               && !(t.tags ?? []).includes('always-today') && routineRecurrence(t.repeatFlag) !== 'unknown'
               && (!draft.dateOwner(t.id) || flexible.has(draft.dateOwner(t.id)!))).map(t => t.id));
@@ -588,7 +590,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         draft.requireRule('vehicle-pickup', vehicles.map(t => t.id));
         const branch = draft.branch('vehicle-pickup', new Set(config.order.filter(allowed)));
         try {
-          if (!visibility.locations && vehicles.some(needsLocation)) throw new RuleDeferredError();
+          if (!visibility.locations && vehicles.some(needsLocation)) throw new RuleDeferredError('boncal 地点未确认，保留原安排');
           if (vehicles.some(t => draft.dateOwner(t.id) && !allowed(draft.dateOwner(t.id)!))) throw new Error('充电日期未确认');
           await syncElectricVehiclePickup(branch.api, { tasks: draft.values(), history: state.history,
             excludedTaskIds: new Set([...excluded, ...abandonedToday]), ticktickConnectionId: connectionId, today, now, calendarState, mode: 'tasks',
@@ -660,7 +662,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             for (const taskId of taskIds) { delete visibilityOwners[taskId]; visibilityDecisions.delete(taskId); }
           }
           for (const result of run.results) if (handlers[result.id] && result.status === 'success'
-            && (result.id.startsWith('calendar-') || result.id.startsWith('outlook-') || calendarDependent.has(result.id))) {
+            && (result.id.startsWith('calendar-') || result.id.startsWith('outlook-') || calendarDependent.has(result.id) || locationDependent.has(result.id))) {
             result.status = result.id.startsWith('calendar-') ? 'failed' : 'skipped';
             result.reason = '日历保存未确认，保留原安排';
           }

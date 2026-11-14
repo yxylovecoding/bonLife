@@ -11,7 +11,7 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 it('没有今日快照时仍显示当日日历读取失败，昨天的失败不冒充今天', async () => {
   m.run = { generatedAt: '2026-11-13T00:01:00Z', results: [{ id: 'calendar-travel', status: 'failed', reason: 'PRIVATE URL' }] };
-  expect(await readOrchestrateProgress()).toMatchObject({ state: 'failed', message: 'Orchestrate 未完成：Outlook 日历读取失败' });
+  expect(await readOrchestrateProgress()).toMatchObject({ state: 'failed', message: 'Orchestrate 未完成：Outlook／Google 订阅读取失败' });
   expect(m.queue).not.toHaveBeenCalled();
   m.run.generatedAt = '2026-11-12T12:00:00Z';
   expect(await readOrchestrateProgress()).toBeNull();

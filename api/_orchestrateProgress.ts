@@ -16,8 +16,8 @@ function summarize(run: SchedulingRun): OrchestrateProgress | null {
   const title = (result: typeof active[number]) => ruleTitle(result.id, run);
   return {
     state: partial ? 'partial' : 'failed',
-    message: partial ? `Orchestrate 部分完成${calendarUnavailable ? '：日历不可用，相关安排暂缓' : ''}`
-      : `Orchestrate 未完成：${calendarUnavailable ? 'Outlook 日历读取失败' : '部分排期规则未完成，请查看 Orchestrator'}`,
+    message: partial ? `Orchestrate 部分完成${calendarUnavailable ? '：日程订阅不可用，相关安排暂缓' : ''}`
+      : `Orchestrate 未完成：${calendarUnavailable ? 'Outlook／Google 订阅读取失败' : '部分排期规则未完成，请查看 Orchestrator'}`,
     generatedAt: run.generatedAt,
     completed: completed.filter(result => result.matched > 0 || result.updated > 0).map(title),
     deferred: deferred.map(title), failed: failed.map(title),
