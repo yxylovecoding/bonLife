@@ -6,7 +6,7 @@ import { rainReminderKey } from './_ticktickRainReminder';
 import type { TickTickTask } from './_ticktickTrips';
 
 const m = vi.hoisted(() => ({ data: new Map<string, any>(), tasks: [] as TickTickTask[], abandoned: [] as TickTickTask[], history: [] as TickTickTask[],
-  create: vi.fn(), get: vi.fn(), historyRead: vi.fn(), filter: vi.fn(), acquire: vi.fn(), release: vi.fn(), weather: vi.fn(), locations: vi.fn() }));
+  create: vi.fn(), get: vi.fn(), historyRead: vi.fn(), filter: vi.fn(), acquire: vi.fn(), release: vi.fn(), weather: vi.fn(), locations: vi.fn(), hourly: vi.fn() }));
 vi.mock('./_accountKv.js', () => ({ kv: {
   mget: async (...keys: string[]) => keys.map(key => structuredClone(m.data.get(key) ?? null)),
   get: async (key: string) => structuredClone(m.data.get(key) ?? null),
@@ -18,6 +18,7 @@ vi.mock('./_accountKv.js', () => ({ kv: {
 vi.mock('./_ticktickLock.js', () => ({ acquireTickTickLock: m.acquire, releaseTickTickLock: m.release }));
 vi.mock('./_calendarWeather.js', () => ({ readCalendarLocations: m.locations }));
 vi.mock('./_dailyWeather.js', () => ({ readDailyWeather: m.weather }));
+vi.mock('./_rainReminderNotes.js', async original => ({ ...await original<typeof import('./_rainReminderNotes')>(), readHourlyRain: m.hourly }));
 vi.mock('./_ticktickTrips.js', async original => ({ ...await original<typeof import('./_ticktickTrips')>(),
   readAllTickTickTasks: async () => structuredClone(m.tasks), decryptTickTickToken: () => 'token',
   TickTickOpenApiClient: class { getTask = m.get; createTask = m.create; listCompletedTasks = m.historyRead; filterTasks = m.filter; },
@@ -45,6 +46,7 @@ beforeEach(() => {
   m.create.mockImplementation(async payload => { const task = { ...payload, id: 'created', status: 0 }; m.tasks.push(task); return structuredClone(task); });
   m.locations.mockResolvedValue({ [date]: { locations: [{ name: '广州', latitude: 23.13, longitude: 113.26 }] } });
   m.weather.mockResolvedValue({ stale: false, fetchedAt: new Date().toISOString(), days: { [date]: { code: 61, precipitation: 3 } } });
+  m.hourly.mockResolvedValue({ hours: Array.from({ length: 24 }, (_, i) => i === 16 ? 3 : 0), fetchedAt: new Date().toISOString() });
 });
 afterEach(() => vi.useRealTimers());
 
@@ -84,12 +86,19 @@ it('下午补跑经过真实规划、提交及最终回读，只创建一次 08:
     tasks: [{ id: 'created', startDate: `${date}T08:00:00+0800`, dueDate: `${date}T08:00:00+0800`, tags: ['活', '当天'], reminders: ['TRIGGER:PT0S'] }] });
   expect(m.get).toHaveBeenCalledTimes(2); expect(m.data.get(key)).toBe(date);
   expect(m.tasks).toEqual([expect.objectContaining({ title: '关窗', priority: 5 })]);
+  expect(m.tasks[0].content).toContain(`天气查询：${date} 15:00:00（北京时间）`);
+  expect(m.tasks[0].content).toContain('16:00–17:00：雨量 3 毫米，最大小时雨量 3 毫米');
   expect((await run())[0].phase).toBe('already-attempted'); expect(m.create).toHaveBeenCalledOnce();
 });
 it('新建关窗回读未保留最高优先级时，规则失败且不记录当天成功', async () => {
   m.get.mockImplementation(async () => ({ ...m.tasks[0], priority: 0 }));
   const result = await run();
   expect(m.create).toHaveBeenCalledWith(expect.objectContaining({ priority: 5 }));
+  expect(result.at(-1).rule.status).toBe('failed'); expect(m.data.has(key)).toBe(false);
+});
+it('新建关窗回读丢失雨情备注时，不能确认写入成功', async () => {
+  m.get.mockImplementation(async () => ({ ...m.tasks[0], content: '' }));
+  const result = await run();
   expect(result.at(-1).rule.status).toBe('failed'); expect(m.data.has(key)).toBe(false);
 });
 it.each([0, 2, -1])('无当天标记但已有状态 %s 的今日提醒不重复创建', async status => {

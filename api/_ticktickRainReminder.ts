@@ -1,6 +1,7 @@
 import { kv } from './_accountKv.js';
 import { readCalendarLocations } from './_calendarWeather.js';
 import { readDailyWeather } from './_dailyWeather.js';
+import { rainReminderNotes, readHourlyRain } from './_rainReminderNotes.js';
 import { sleepWindow } from './_ticktickSleepTags.js';
 import { calendarDateInTimeZone, type TickTickApi, type TickTickTask } from './_ticktickTrips.js';
 
@@ -34,14 +35,17 @@ export async function planRainReminder(api: TickTickApi, options: {
   if ([...options.tasks, ...options.completedTasks, ...options.abandonedTasks].some(task => isRainReminderOnDay(task, day))) {
     finish(true); return { reason: '已有同日关窗，不重复创建' };
   }
-  const { rainy } = await readRainReminderForecast(day, options.calendarState);
-  if (rainy) {
+  const checkedAt = new Date();
+  const forecast = await readRainReminderForecast(day, options.calendarState);
+  if (forecast.rainy) {
     const time = `${day}T08:00:00+0800`;
+    const hourly = await readHourlyRain(forecast.city, day);
+    const content = rainReminderNotes({ ...forecast, day, checkedAt, hourly });
     await api.createTask({ projectId: options.projectId, title: '关窗', startDate: time, dueDate: time,
-      timeZone: 'Asia/Shanghai', isAllDay: false, priority: 5, tags: ['活', '当天'], reminders: ['TRIGGER:PT0S'] });
+      content, timeZone: 'Asia/Shanghai', isAllDay: false, priority: 5, tags: ['活', '当天'], reminders: ['TRIGGER:PT0S'] });
   }
-  finish(rainy);
-  return { reason: rainy ? '有雨，已生成当天 08:00 关窗提醒' : '当天预报无雨，无需关窗提醒' };
+  finish(forecast.rainy);
+  return { reason: forecast.rainy ? '有雨，已生成当天 08:00 关窗提醒' : '当天预报无雨，无需关窗提醒' };
 }
 
 export async function readRainReminderForecast(day: string, calendarState: unknown, observe?: (value: Record<string, unknown>) => void) {

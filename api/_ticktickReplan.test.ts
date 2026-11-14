@@ -9,7 +9,7 @@ import type { TickTickTask } from './_ticktickTrips';
 
 const m = vi.hoisted(() => ({ data: new Map<string, any>(), tasks: [] as TickTickTask[], history: [] as TickTickTask[], abandoned: [] as TickTickTask[], abandonedRead: vi.fn(),
   get: vi.fn(), write: vi.fn(), create: vi.fn(), historyRead: vi.fn(), snapshot: vi.fn(), fullOutlook: vi.fn(), saveOutlook: vi.fn(),
-  acquire: vi.fn(), release: vi.fn(), rain: vi.fn(), weather: vi.fn(), laundry: vi.fn(), exercise: vi.fn(), hairOutlook: vi.fn(), chargingOutlook: vi.fn(),
+  acquire: vi.fn(), release: vi.fn(), rain: vi.fn(), weather: vi.fn(), hourlyRain: vi.fn(), laundry: vi.fn(), exercise: vi.fn(), hairOutlook: vi.fn(), chargingOutlook: vi.fn(),
   trip: vi.fn(), wish: vi.fn(), period: vi.fn(), pickupOutlook: vi.fn(), tagsRead: vi.fn(), locationFailure: false, city: '北京' }));
 vi.mock('./_accountKv.js', () => ({ kv: {
   mget: async (...keys: string[]) => keys.map(key => structuredClone(m.data.get(key) ?? null)),
@@ -33,6 +33,7 @@ vi.mock('./_outlookRecurringTaskEvents.js', () => ({ syncRecurringTaskOutlook: m
 vi.mock('./_ticktickPeriodPrediction.js', () => ({ syncPeriodPredictionTask: m.period }));
 vi.mock('./_ticktickRainReminder.js', async original => ({ ...await original<typeof import('./_ticktickRainReminder')>(), planRainReminder: m.rain }));
 vi.mock('./_dailyWeather.js', () => ({ readDailyWeather: m.weather }));
+vi.mock('./_rainReminderNotes.js', async original => ({ ...await original<typeof import('./_rainReminderNotes')>(), readHourlyRain: m.hourlyRain }));
 vi.mock('./_ticktickTrips.js', async original => ({ ...await original<typeof import('./_ticktickTrips')>(),
   decryptTickTickToken: () => 'test-token', readAllTickTickTasks: async (api: any, statuses: number[]) => api.filterTasks
     ? api.filterTasks([], statuses) : structuredClone(m.tasks.filter(t => statuses.includes(t.status ?? 0))),
@@ -985,6 +986,7 @@ describe('雨天关窗独立于 Outlook 刷新', () => {
     m.data.set('app-config', { config: { schoolCity: GUANGZHOU, homeCity: BEIJING } });
     m.data.set('outlook:calendar-connection:v1', { id: 'outlook', encrypted: 'fixture' });
     m.weather.mockResolvedValue({ days: { [day]: { code: 61, precipitation: 2 } }, stale: false });
+    m.hourlyRain.mockResolvedValue({ hours: Array.from({ length: 24 }, (_, i) => i === 9 ? 2 : 0), fetchedAt: new Date().toISOString() });
   });
   const failOutlook = () => {
     m.fullOutlook.mockRejectedValue(new Error('subscription unavailable'));
@@ -1002,6 +1004,8 @@ describe('雨天关窗独立于 Outlook 刷新', () => {
     const reminder = m.tasks.find(t => t.title === '关窗')!;
     expect(reminder).toMatchObject({ startDate: `${day}T08:00:00+0800`, dueDate: `${day}T08:00:00+0800`,
       priority: 5, tags: expect.arrayContaining(['活', '当天']), reminders: ['TRIGGER:PT0S'] });
+    expect(reminder.content).toContain('09:00–10:00：雨量 2 毫米，最大小时雨量 2 毫米');
+    expect(reminder.content).toContain(`天气查询：${day} 07:01:00（北京时间）`);
     expect(m.get).toHaveBeenCalledWith('life', reminder.id);
     expect(m.data.get(key)).toBe(day);
     expect(m.tasks.find(t => t.id === 'keep')).toEqual(original);
