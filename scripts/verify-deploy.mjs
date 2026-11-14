@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { request } from 'node:http';
+import { Agent, request } from 'node:http';
 import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 
 // Exercise the built artifact through real HTTP without production credentials.
 const deno = process.argv[2];
@@ -36,6 +37,30 @@ try {
     return response;
   }
   assert.deepEqual(await (await check('/healthz', 200)).json(), { ok: true });
+  // Render reuses upstream connections for up to 75 seconds. Exercise reuse
+  // beyond Node's default 5-second idle timeout against the deployed artifact.
+  const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+  try {
+    const probe = () => new Promise((accept, reject) => {
+      const req = request(base + '/healthz', { agent }, response => {
+        response.resume();
+        response.once('end', () => {
+          try {
+            assert.equal(response.statusCode, 200);
+            accept({ socket: req.socket, keepAlive: response.headers['keep-alive'] });
+          } catch (error) { reject(error); }
+        });
+      });
+      req.setTimeout(5000, () => req.destroy(new Error('Keep-alive probe timed out')));
+      req.once('error', reject); req.end();
+    });
+    const first = await probe();
+    await delay(7000);
+    const second = await probe();
+    assert.ok(second.socket === first.socket, 'Render upstream connection must survive the default Node idle window');
+    assert.ok(Number(first.keepAlive?.match(/timeout=(\d+)/)?.[1]) > 75, 'Advertised keep-alive must exceed Render proxy reuse');
+    checks++;
+  } finally { agent.destroy(); }
   // Fetch may normalize Host, so use raw HTTP to exercise canonical-domain routing.
   await new Promise((accept, reject) => {
     const req = request(base + '/life?view=briefing', { headers: { Host: 'bonbills.cn' } }, response => {

@@ -35,14 +35,16 @@ describe('response and retry boundary', () => {
     const log = vi.spyOn(console, 'info').mockImplementation(() => {});
     try {
       vi.stubGlobal('fetch', vi.fn()
-        .mockResolvedValueOnce(new Response('<html>PRIVATE gateway body</html>', { status: 502, headers: { 'content-type': 'text/html' } }))
+        .mockResolvedValueOnce(new Response('<html>PRIVATE gateway body</html>', { status: 502, headers: {
+          'content-type': 'text/html', 'cf-cache-status': 'HIT', 'cf-ray': '0123456789abcdef-SIN' } }))
         .mockResolvedValueOnce(Response.json({ ok: false, error: 'PRIVATE task error', rulesComplete: false }, { status: 502,
-          headers: { 'x-render-origin-server': 'Render', 'x-private': 'PRIVATE header' } })));
+          headers: { 'x-render-origin-server': 'Render', 'x-private': 'PRIVATE header', 'cf-ray': 'PRIVATE header', 'cf-cache-status': 'PRIVATE header' } })));
       const env = { ORIGIN: 'https://backend.example', SCHEDULER_RUN_SECRET: 'PRIVATE credential' };
       expect(await callAction('hourly-replan', env, attempt)).toMatchObject({ outcome: 'failed', http: 502 });
       expect(await callAction('hourly-replan', env, attempt)).toMatchObject({ outcome: 'failed', http: 502 });
       const records = log.mock.calls.map(call => JSON.parse(call[1]));
-      expect(records[0]).toMatchObject({ phase: 'business', http: 502, responseKind: 'html', renderOrigin: false });
+      expect(records[0]).toMatchObject({ phase: 'business', http: 502, responseKind: 'html', renderOrigin: false,
+        edgeCache: 'HIT', edgeRequest: '0123456789abcdef-SIN' });
       expect(records[1]).toMatchObject({ phase: 'business', http: 502, responseKind: 'application-json', renderOrigin: true,
         applicationError: true, rulesComplete: false });
       expect(JSON.stringify(log.mock.calls)).not.toContain('PRIVATE');

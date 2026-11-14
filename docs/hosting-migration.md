@@ -39,6 +39,8 @@ Render 免费服务禁止 SMTP 25/465/587。用户于 2026-11-04 明确取消每
 
 `server/index.ts` 通过 Node HTTP 兼容接口复用现有 12 个 API 入口。显式路由表禁止访问内部模块；沿用 API 重写、Cookie、同源检查、账号隔离和 4.5MB 请求上限。只从 `dist` 提供前端文件，SPA 深链接返回首页，丢失资源返回 404。
 
+Node 的 `keepAliveTimeout` 与 `headersTimeout` 均设为 120 秒，超过 Render 上游代理的 75 秒连接复用窗口，避免默认 5 秒提前断连造成间歇性 502；请求体接收期限仍为 30 秒。`verify:deploy` 使用真实 HTTP 连接验证跨默认空闲窗口的复用及声明的连接期限。依据：[Render 运行时连接排障](https://render.com/tutorials/when-deploys-go-wrong/runtime-errors)。这项配置修复不替代冷启动探测；云端队列仍须确认 `/healthz` 后才发送业务请求，未知写入结果不得重放。
+
 `render.yaml` 固定 `plan: free`、Singapore、Node 24、构建和启动命令及 `/healthz`；不声明数据库或额外服务。初次部署使用迁移分支，正式切换后跟随 main。应用所需密钥单独迁移，不写进仓库。
 
 当前服务以公开 Git 仓库 URL 连接 main，尚未连接 GitHub provider。即使 API 的 autoDeploy 字段显示开启，推送仍不会自动发布；本次通过 Render 手动部署完成。后续发布先检查 deploy 列表，确认最新提交没有自动构建，再触发一次部署，避免重复消耗免费构建分钟。

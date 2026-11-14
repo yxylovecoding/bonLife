@@ -138,7 +138,11 @@ const server = createServer(async (req, rawResponse) => {
   }
 });
 server.requestTimeout = 30_000;
-server.headersTimeout = 15_000;
+// Render's proxy can reuse an upstream connection for 75 seconds. Node's
+// five-second default can close it before reuse and surface as a gateway 502.
+// Keep the request/body deadline separate from idle connection lifetime.
+server.keepAliveTimeout = 120_000;
+server.headersTimeout = 120_000;
 server.listen(Number(process.env.PORT || 8000), '0.0.0.0', () => {
   const address = server.address();
   console.log(`BonBills HTTP server ready:${typeof address === 'object' && address ? address.port : ''}`);

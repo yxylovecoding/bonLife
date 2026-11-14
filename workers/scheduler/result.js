@@ -11,6 +11,9 @@ function logOrigin(phase, action, started, response, body, error) {
       : type.includes('application/json') ? 'json' : type.includes('text/html') ? 'html'
         : response ? 'other' : 'none',
     renderOrigin: response?.headers.get('x-render-origin-server') === 'Render' };
+  const cache = response?.headers.get('cf-cache-status'), ray = response?.headers.get('cf-ray');
+  if (['HIT', 'MISS', 'DYNAMIC', 'BYPASS', 'EXPIRED', 'STALE', 'REVALIDATED', 'UPDATING'].includes(cache)) record.edgeCache = cache;
+  if (ray && /^[a-f\d]{16,32}-[A-Z]{3}$/.test(ray)) record.edgeRequest = ray;
   if (typeof body?.rulesComplete === 'boolean') record.rulesComplete = body.rulesComplete;
   if (body?.error) record.applicationError = true;
   if (body?.failure) record.failureStage = stages.has(body.failure.stage) ? body.failure.stage : 'unknown';
