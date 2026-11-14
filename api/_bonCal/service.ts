@@ -66,10 +66,13 @@ export async function readBonCalSchedulingState(calendarOverride?: unknown, conf
   for (const [date, day] of Object.entries(locations)) {
     // A gap in the saved/derived calendar is not evidence for a new schedulable date.
     if (!Object.hasOwn(calendar.tagMap, date) && !Object.hasOwn(dayOverrides, date)) continue;
-    if (day.error) throw new Error('地点读取失败，保留原安排');
-    cityMap[date] = day.locations.length === 1 && !day.unresolved?.length ? day.locations[0] : null;
+    // A future trip's geocoding failure must not invalidate today's confirmed
+    // city. Keep the failure on that date so date selection can preserve it.
+    cityMap[date] = !day.error && day.locations.length === 1 && !day.unresolved?.length ? day.locations[0] : null;
     // The resolved city already incorporates all explicit overrides, in the shared order.
     if (dayOverrides[date]?.city) { const { city: _city, ...rest } = dayOverrides[date]; dayOverrides[date] = rest; }
   }
+  const failedDays = Object.values(locations).filter(day => day.error).length;
+  if (failedDays) console.warn('[boncal-location-source]', JSON.stringify({ failedDays, todayFailed: Boolean(locations[today]?.error) }));
   return { ...calendar, cityMap, dayOverrides, bonCalRevision: inputs.revision, bonCalLocations: locations };
 }

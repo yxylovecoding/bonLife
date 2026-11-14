@@ -3,6 +3,8 @@ import { BonCalConflict, readBonCalInputs, repairBonCalStorage, saveBonCalUpload
 import { readBonCalContext, readBonCalSchedulingState } from './_bonCal/service';
 import { readOutlookSnapshot } from './_bonCal/provider';
 import { DEFAULT_OUTLOOK_RULES } from '../src/boncal/events';
+import { readLocationVisibility } from './_taskVisibilityRules';
+import { nextTaskLocationDate, taskLocationAllowed } from './_ticktickLocation';
 const { data, google } = vi.hoisted(() => ({ data: new Map<string, any>(), google: vi.fn() }));
 vi.mock('./_accountKv.js', () => ({ kv: {
   mget: async (...keys: string[]) => keys.map(key => structuredClone(data.get(key) ?? null)),
@@ -73,6 +75,24 @@ it('多目的地没有每日明确位置时，公共上下文与排程都返回�
   const context = await readBonCalContext('2026-11-13', '2026-11-14');
   const scheduling = await readBonCalSchedulingState(undefined, undefined, '2026-11-13');
   expect(context.days['2026-11-13'].location).toBeNull(); expect(scheduling.cityMap['2026-11-13']).toBeNull();
+});
+it('未来目的地读取失败不阻断今天的地点显隐，也不能跳过该不确定日期另选更晚的城市日', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('geocoding unavailable')));
+  const city = { name: '广州', latitude: 23.1, longitude: 113.3 };
+  data.set('app-config', { config: { schoolCity: city } });
+  data.set('calendar-tags', { tagMap: { '2026-11-13': 'school', '2026-12-01': 'travel', '2026-12-02': 'school' },
+    outlookTravelTitles: { '2026-12-01': '大阪' } });
+  const state = await readBonCalSchedulingState(undefined, undefined, '2026-11-13');
+  const visibility = await readLocationVisibility('2026-11-13', state);
+  expect(visibility).toMatchObject({ today: ['广州'], unknown: false });
+  expect(state.bonCalLocations['2026-12-01'].error).toBe('地点读取失败');
+  expect(state.cityMap['2026-12-01']).toBeNull();
+  const task = { id: 'fixture', projectId: 'life', title: 'fixture', tags: ['广州'] };
+  expect(taskLocationAllowed(task, state, '2026-11-13')).toBe(true);
+  expect(taskLocationAllowed(task, state, '2026-12-01')).toBe(false);
+  expect(nextTaskLocationDate(task, state, '2026-12-01')).toBeNull();
+  expect(nextTaskLocationDate({ ...task, tags: ['广州', '居'] }, state, '2026-12-01')).toBe('2026-12-02');
+  await expect(readLocationVisibility('2026-12-01', state)).rejects.toThrow('地点读取失败');
 });
 it('历史快照的明确生日证据能修复缺少标题的日期，保留同日回家候选', async () => {
   data.set('calendar-tags', { tagMap: { '2026-01-01': 'travel' }, outlookApplied: { '2026-01-01': { tag: 'travel', previousTag: 'school' } } });

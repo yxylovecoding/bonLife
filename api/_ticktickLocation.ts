@@ -12,10 +12,11 @@ interface LocationCalendar {
   locationCities?: SceneCity[];
   dayOverrides?: Record<string, { city?: SceneCity }>;
   locationTags?: string[];
+  bonCalLocations?: Record<string, { error?: string }>;
 }
 const calendar = (state: unknown) => (state ?? {}) as LocationCalendar;
 const sceneTags = new Set(['寄', '居', '寓', '旅']);
-interface LocationIndex { members?: Set<string>; known: Set<string>; scenes: Set<string>; dates: string[]; days: Map<string, { scene: unknown; city: string }> }
+interface LocationIndex { members?: Set<string>; known: Set<string>; scenes: Set<string>; dates: string[]; days: Map<string, { scene: unknown; city: string; unavailable: boolean }> }
 const indexes = new WeakMap<object, LocationIndex>();
 function buildIndex(state: unknown): LocationIndex {
   const value = calendar(state);
@@ -29,7 +30,7 @@ function buildIndex(state: unknown): LocationIndex {
     ...Object.keys(value.dayOverrides ?? {})])].filter(validDate).sort();
   const days = new Map(dates.map(date => {
     const city = readSceneCity(value.dayOverrides?.[date]?.city) ?? readSceneCity(value.cityMap?.[date]);
-    return [date, { scene: value.tagMap?.[date], city: city ? cityName(cityLabel(city)) : '' }];
+    return [date, { scene: value.tagMap?.[date], city: city ? cityName(cityLabel(city)) : '', unavailable: Boolean(value.bonCalLocations?.[date]?.error) }];
   }));
   return { members: explicit ? new Set(explicit) : undefined, known, scenes, dates, days };
 }
@@ -60,6 +61,10 @@ export function hasTaskLocation(task: TickTickTask, state: unknown): boolean {
   return scenes.length > 0 || cities.length > 0;
 }
 
+export function taskLocationUnavailable(task: TickTickTask, state: unknown, date: string): boolean {
+  return hasTaskLocation(task, state) && Boolean(indexFor(state).days.get(date)?.unavailable);
+}
+
 // Scene alternatives are OR; city alternatives are OR; the two groups are AND.
 // Unknown locations never count as being in the requested city.
 export function taskLocationAllowed(task: TickTickTask, state: unknown, date: string): boolean {
@@ -67,11 +72,15 @@ export function taskLocationAllowed(task: TickTickTask, state: unknown, date: st
   return matchesLocation(index, date, scenes, cities);
 }
 
+function matchesScene(scene: unknown, scenes: string[]) {
+  return !scenes.length || scenes.some(tag => tag === '寄' ? scene === 'home'
+    : tag === '旅' ? scene === 'travel' : scene === 'school' || scene === 'intern');
+}
 function matchesLocation(index: LocationIndex, date: string, scenes: string[], cities: string[]): boolean {
-  if ((scenes.length || cities.length) && !validDate(date)) return false;
-  const day = index.days.get(date), scene = day?.scene;
-  if (scenes.length && !scenes.some(tag => tag === '寄' ? scene === 'home'
-    : tag === '旅' ? scene === 'travel' : scene === 'school' || scene === 'intern')) return false;
+  if (!scenes.length && !cities.length) return true;
+  if (!validDate(date)) return false;
+  const day = index.days.get(date);
+  if (day?.unavailable || !matchesScene(day?.scene, scenes)) return false;
   return !cities.length || Boolean(day?.city && cities.includes(day.city));
 }
 
@@ -83,7 +92,13 @@ function findDate(task: TickTickTask, index: LocationIndex, from: string): strin
   if (!scenes.length && !cities.length) return from;
   let low = 0, high = index.dates.length;
   while (low < high) { const middle = (low + high) >>> 1; if (index.dates[middle] < from) low = middle + 1; else high = middle; }
-  for (let i = low; i < index.dates.length; i++) if (matchesLocation(index, index.dates[i], scenes, cities)) return index.dates[i];
+  for (let i = low; i < index.dates.length; i++) {
+    const date = index.dates[i], day = index.days.get(date);
+    // Do not move a task past an unconfirmed potentially eligible day. Known
+    // incompatible scenes can still be skipped without needing their city.
+    if (day?.unavailable && matchesScene(day.scene, scenes)) return null;
+    if (matchesLocation(index, date, scenes, cities)) return date;
+  }
   return null;
 }
 export function createTaskLocationDateFinder(state: unknown) {

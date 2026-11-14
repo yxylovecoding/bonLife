@@ -60,6 +60,35 @@ describe('日历故障隔离与恢复', () => {
     m.fullOutlook.mockRejectedValue(new Error('private provider failure'));
     m.snapshot.mockRejectedValue(new Error('private provider failure'));
   };
+  it.each(['full', 'hourly', 'visibility'] as const)('%s 未来行程地理查询失败时，当天真实 boncal 地点仍允许定时任务显示', async scope => {
+    m.realLocations = true;
+    m.data.set('app-config', { config: { schoolCity: GUANGZHOU } });
+    m.data.set('calendar-tags', { tagMap: { [day]: 'school', '2027-03-01': 'travel' }, outlookTravelTitles: { '2027-03-01': '大阪' } });
+    m.tasks = [task('timed', { tags: ['广州', '居', 'hidden', 'routine'], priority: 5, isAllDay: false,
+      startDate: `${day}T13:00:00+0800`, dueDate: `${day}T13:00:00+0800` })];
+    const original = structuredClone(m.tasks[0]);
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('geocoding unavailable'));
+    try {
+      const result = await runRuleReplan({ scope });
+      expect(status(result, 'visibility-timed')).toMatchObject({ status: 'success', deferred: 0 });
+      expect(m.tasks[0]).toEqual({ ...original, tags: ['广州', '居', 'routine'] });
+    } finally { fetcher.mockRestore(); }
+  });
+  it.each(['full', 'hourly', 'visibility'] as const)('%s 当天地理查询确实失败时只保留有地点条件的显隐', async scope => {
+    m.realLocations = true;
+    m.data.set('calendar-tags', { tagMap: { [day]: 'travel' }, outlookTravelTitles: { [day]: '大阪' } });
+    const timed = (id: string, tags: string[]) => task(id, { tags: [...tags, 'hidden', 'routine'], priority: 5,
+      isAllDay: false, startDate: `${day}T13:00:00+0800`, dueDate: `${day}T13:00:00+0800` });
+    m.tasks = [timed('located', ['广州']), timed('plain', [])];
+    const originals = structuredClone(m.tasks);
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('geocoding unavailable'));
+    try {
+      const result = await runRuleReplan({ scope });
+      expect(status(result, 'visibility-timed')).toMatchObject({ status: 'success', deferred: 1 });
+      expect(m.tasks[0]).toEqual(originals[0]);
+      expect(m.tasks[1]).toEqual({ ...originals[1], tags: ['routine'] });
+    } finally { fetcher.mockRestore(); }
+  });
   it.each(['full', 'hourly', 'visibility'] as const)('%s 双订阅不可用时真实 boncal 地点仍支持到点显示，同时保留不适用地点与未到点的隐藏', async scope => {
     fail(); m.realLocations = true;
     vi.setSystemTime(new Date(`${day}T09:01:00+08:00`));

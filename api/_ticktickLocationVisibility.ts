@@ -1,5 +1,5 @@
 import { kv } from './_accountKv.js';
-import { hasTaskLocation, taskLocationAllowed } from './_ticktickLocation.js';
+import { hasTaskLocation, taskLocationAllowed, taskLocationUnavailable } from './_ticktickLocation.js';
 import { calendarDateInTimeZone, readAllTickTickTasks, readRoutineCalendarState,
   type TickTickApi, type TickTickTask } from './_ticktickTrips.js';
 import { hairWashHidden, hasHiddenTag, nightRoutineHidden, readingHidden, timedTaskHidden, writeHiddenTag } from './_ticktickNightRoutine.js';
@@ -27,12 +27,14 @@ export async function syncTickTickLocationVisibility(api: TickTickApi, options: 
     if ((candidate.status ?? 0) !== 0 || candidate.completedTime) continue;
     const key = JSON.stringify([candidate.projectId, candidate.id]);
     if (!journal[key] && !hasTaskLocation(candidate, calendarState)) continue;
+    if (taskLocationUnavailable(candidate, calendarState, today)) throw new Error('地点读取失败，保留当前显隐');
     const allowed = taskLocationAllowed(candidate, calendarState, today);
     if (allowed ? !journal[key] || otherwiseHidden(candidate) : hasHiddenTag(candidate)) continue;
     const task = await api.getTask(candidate.projectId, candidate.id);
     if (!task || task.id !== candidate.id || task.projectId !== candidate.projectId) throw new Error('地点标签待办读取失败');
     Object.assign(candidate, task);
     if ((task.status ?? 0) !== 0 || task.completedTime) continue;
+    if (taskLocationUnavailable(task, calendarState, today)) throw new Error('地点读取失败，保留当前显隐');
     if (!taskLocationAllowed(task, calendarState, today)) {
       if (hasHiddenTag(task)) continue;
       journal[key] = { projectId: task.projectId, id: task.id };

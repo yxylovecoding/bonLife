@@ -34,6 +34,14 @@ function fixture(source: TickTickTask[]) {
   return { api, stored, update };
 }
 beforeEach(() => { data.clear(); vi.useFakeTimers(); vi.setSystemTime(now); });
+it('旧地点显隐入口也保留当天地点读取失败的任务，不能把失败当作异地并隐藏', async () => {
+  const source = task('held', { tags: ['广州'] });
+  const { api, stored, update } = fixture([source]);
+  await expect(syncTickTickLocationVisibility(api, { tasks: [source], now,
+    calendarState: { ...calendarState, bonCalLocations: { [today]: { error: '地点读取失败' } } },
+  })).rejects.toThrow('地点读取失败，保留当前显隐');
+  expect(update).not.toHaveBeenCalled(); expect(stored.get(source.id)).toEqual(source);
+});
 afterEach(() => vi.useRealTimers());
 
 describe('地点匹配与日期规则分离', () => {
