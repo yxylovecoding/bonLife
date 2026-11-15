@@ -1641,8 +1641,9 @@ input[type='number'] { -moz-appearance: textfield; }
 }
 
 .reconcile-budget-flows {
+  justify-content: flex-start;
+  flex-wrap: nowrap;
   font-size: 12px;
-  padding-right: 19px;
 }
 
 .reconcile-detail-row {

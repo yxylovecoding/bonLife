@@ -69,10 +69,25 @@ export function calculateTransferAllocation(incomeBalance: number, essentialNeed
   const needsRedemption = roundMoney(Math.max(essentialNeed - afterRaiseSavings, 0));
   const afterEssentials = roundMoney(Math.max(afterRaiseSavings - essentialNeed, 0));
   // 保留原有整数舍入与 50% / 80% 分配规则。
-  const invest = Math.round(afterEssentials * 0.5);
+  const invest = Math.min(Math.round(afterEssentials * 0.5), afterEssentials);
   const consumeTotal = roundMoney(afterEssentials - invest);
-  const wishJar = Math.round(consumeTotal * 0.8);
+  const wishJar = Math.min(Math.round(consumeTotal * 0.8), consumeTotal);
   return { needsRedemption, afterEssentials, invest, wishJar, consumption: roundMoney(consumeTotal - wishJar) };
+}
+
+export function calculateLivingTransfer({ monthlyShortfall, monthlyBalances, incomeBalance, raiseSavingsRemaining, repaymentShortfall }: {
+  monthlyShortfall: number;
+  monthlyBalances: readonly number[];
+  incomeBalance: number;
+  raiseSavingsRemaining: number;
+  repaymentShortfall: number;
+}) {
+  // 结余已逐月结转，同一赤字不能重复相加；取三个月内最大的累计缺口。
+  const deficitReserve = roundMoney(Math.max(0, ...monthlyBalances.map(balance => -balance)));
+  const need = roundMoney(Math.max(monthlyShortfall, 0) + deficitReserve);
+  const available = roundMoney(Math.max(incomeBalance - raiseSavingsRemaining - repaymentShortfall, 0));
+  const transfer = Math.min(need, available);
+  return { deficitReserve, need, available, transfer };
 }
 
 const TRANSFER_ACCOUNT_KEYS: Partial<Record<TransferKey, keyof AccountSnapshot['accounts']>> = {

@@ -19,8 +19,8 @@ import { useBillDetailStore } from '../stores/billDetailStore';
 import { useExpenseScopeOverrideStore } from '../stores/expenseScopeOverrideStore';
 import { useTripStore } from '../stores/tripStore';
 import { usePrefsStore } from '../stores/prefsStore';
-import { budgetCalendarTags, calcBudget } from '../calculations/budget';
-import { calculateRaiseSavings, calculateTransferAllocation, resolveRaiseSavingsSettings, resolveRecurringIncomeBaseline, TRANSFER_KEYS, type TransferKey } from '../calculations/reconcileTransfers';
+import { budgetCalendarTags, calcBudget, rollBudgetMonths } from '../calculations/budget';
+import { calculateLivingTransfer, calculateRaiseSavings, calculateTransferAllocation, resolveRaiseSavingsSettings, resolveRecurringIncomeBaseline, TRANSFER_KEYS, type TransferKey } from '../calculations/reconcileTransfers';
 import { calcHistoryStats } from '../calculations/history';
 import { calcAllocationRatios, calcRebalance, calcTopUpRebalance } from '../calculations/rebalance';
 import { calcRemainingRecurringInvestments, deductRecurringInvestments, shouldCancelRecurringInvestment } from '../calculations/recurringInvestment';
@@ -482,7 +482,7 @@ const TRANSFER_META: Record<TransferKey, { label: string }> = {
   invest:      { label: '📈 理财' },
 };
 
-type BudgetKey = 'weekly' | 'monthly' | 'beyond';
+type BudgetKey = 'monthly' | 'beyond' | 'following';
 type ReconcileMode = 'monthStart' | 'monthMiddle';
 
 type ReconcileUndoState = {
@@ -605,6 +605,9 @@ export default function ReconcilePage() {
   const nextMonthDate = new Date(currentYear, currentMonth + 1, 1);
   const nextYear = nextMonthDate.getFullYear();
   const nextMonth = nextMonthDate.getMonth();
+  const followingMonthDate = new Date(currentYear, currentMonth + 2, 1);
+  const followingYear = followingMonthDate.getFullYear();
+  const followingMonth = followingMonthDate.getMonth();
   const curYM = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
   const currentInvestRecord = useMemo(
     () => records.find((record) => record.yearMonth === curYM),
@@ -841,7 +844,7 @@ export default function ReconcilePage() {
   };
 
   const showCreditMonthlyInput = isMonthStartMode;
-  const { holidayDataByYear, holidayWarning } = useHolidayYears([currentYear - 1, currentYear, nextYear]);
+  const { holidayDataByYear, holidayWarning } = useHolidayYears([currentYear - 1, currentYear, nextYear, followingYear]);
 
   // 历史均值（只取近两年）
   const twoYearsAgo = `${today.getFullYear() - 1}-01`;
@@ -863,6 +866,10 @@ export default function ReconcilePage() {
   const nextResolvedIncomeItems = useMemo(
     () => resolveAllIncomeForMonth(config.incomeItems, nextYear, nextMonth, tagMap, holidayDataByYear, internship),
     [config.incomeItems, nextYear, nextMonth, tagMap, holidayDataByYear, internship],
+  );
+  const followingResolvedIncomeItems = useMemo(
+    () => resolveAllIncomeForMonth(config.incomeItems, followingYear, followingMonth, tagMap, holidayDataByYear, internship),
+    [config.incomeItems, followingYear, followingMonth, tagMap, holidayDataByYear, internship],
   );
 
   const effectiveConfig = useMemo(() => ({
@@ -1376,15 +1383,16 @@ export default function ReconcilePage() {
   };
 
   const todayDate = today.getDate();
-  const weekEnd = todayDate + Math.min(budget.daysLeftInMonth, 7);
   const payDateDay = (item: ResolvedIncomeItem) => Number(item.resolvedPayDate.slice(8, 10));
   const internIncomeLast = (a: ResolvedIncomeItem, b: ResolvedIncomeItem) =>
     Number(a.isInternPayroll) - Number(b.isInternPayroll);
-  const makeIncomeNote = (item: ResolvedIncomeItem, status: 'upcoming' | 'received' | 'next') => {
+  const makeIncomeNote = (item: ResolvedIncomeItem, status: 'upcoming' | 'received' | 'next' | 'following') => {
     const baseLabel = status === 'received'
       ? `${payDateDay(item)}号已发`
       : status === 'next'
         ? `次月${payDateDay(item)}号发薪`
+        : status === 'following'
+          ? `后月${payDateDay(item)}号发薪`
         : `${payDateDay(item)}号发薪`;
     const taxLabel = item.taxAmount > 0
       ? `；扣税¥${fmtInt(item.taxAmount)}，到手¥${fmtInt(item.resolvedAmount)}`
@@ -1438,7 +1446,7 @@ export default function ReconcilePage() {
     label: '信用卡下期',
     amount: effectiveCreditNext,
     note: creditDetailNote(
-      `次月${configuredCreditPayDay}号还款`,
+      `${creditInThisMonth ? '次月' : '后月'}${configuredCreditPayDay}号还款`,
       creditNextOriginal,
       savingsAppliedNext,
       longBondRepayNext,
@@ -1453,10 +1461,13 @@ export default function ReconcilePage() {
   };
 
   const livingRows = (window: BudgetKey): BudgetDetailItem[] => {
+    const yearMonth = window === 'monthly' ? curYM
+      : window === 'beyond' ? `${nextYear}-${String(nextMonth + 1).padStart(2, '0')}`
+        : `${followingYear}-${String(followingMonth + 1).padStart(2, '0')}`;
     const grouped = new Map<string, { icon: string; amount: number; days: number }>();
     for (const { date, tag } of tags) {
       const day = Number(date.slice(8));
-      const include = window === 'beyond' ? date.startsWith(`${nextYear}-${String(nextMonth + 1).padStart(2, '0')}`) : date.startsWith(curYM) && day > todayDate && (window !== 'weekly' || day <= weekEnd);
+      const include = date.startsWith(yearMonth) && (window !== 'monthly' || day > todayDate);
       if (!include) continue;
       const context = resolveDailyContext(date, tag, internship);
       const { label, icon } = BUDGET_SCENE_META[context.livingKind];
@@ -1466,17 +1477,6 @@ export default function ReconcilePage() {
     return [...grouped].map(([label, value]) => ({ icon: value.icon, label, amount: Math.round(value.amount), note: `${value.days}天`, isLivingExpense: true }));
   };
   const budgetDetails: Record<BudgetKey, { income: BudgetDetailItem[]; expense: BudgetDetailItem[] }> = {
-    weekly: {
-      income: [
-        { icon: '🏦', label: '生活账户余额', amount: current.accounts.livingBank ?? 0, note: '当前余额' },
-        ...currentResolvedIncomeItems.filter((item) => item.isActive && payDateDay(item) > todayDate && payDateDay(item) <= weekEnd).sort(internIncomeLast).map((item) => ({
-          icon: '💰', label: item.name, amount: item.resolvedAmount, isIncome: true, note: makeIncomeNote(item, 'upcoming'),
-        })),
-      ],
-      expense: [
-        ...livingRows('weekly'),
-      ],
-    },
     monthly: {
       income: [
         { icon: '🏦', label: '生活账户余额', amount: current.accounts.livingBank ?? 0, note: '当前余额' },
@@ -1509,6 +1509,19 @@ export default function ReconcilePage() {
         ...livingRows('beyond'),
       ],
     },
+    following: {
+      income: followingResolvedIncomeItems.filter(item => item.isActive).sort(internIncomeLast).map(item => ({
+        isIncome: true,
+        icon: '💰',
+        label: item.name,
+        amount: item.resolvedAmount,
+        note: makeIncomeNote(item, 'following'),
+      })),
+      expense: [
+        ...(!creditInThisMonth ? [creditNextItem] : []),
+        ...livingRows('following'),
+      ],
+    },
   };
 
   const sumDetailExp = (key: BudgetKey) =>
@@ -1516,7 +1529,26 @@ export default function ReconcilePage() {
   const sumDetailInc = (key: BudgetKey) =>
     budgetDetails[key].income.reduce((s, i) => s + i.amount, 0);
 
-  // 建议转账直接引用「预算计算」里展开后的月内支出口径，避免两边口径不一致
+  const budgetPeriods: { key: BudgetKey; name: string }[] = [
+    { key: 'monthly', name: '本月' },
+    { key: 'beyond', name: '次月' },
+    { key: 'following', name: '后月' },
+  ];
+  const rolledMonths = rollBudgetMonths(budgetPeriods.map(({ key }) => ({
+    income: sumDetailInc(key), expense: sumDetailExp(key),
+  })));
+  const budgetRows = budgetPeriods.map((period, index) => {
+    const { income, expense, carry, balance } = rolledMonths[index];
+    if (index > 0 && carry !== 0) {
+      const previousName = budgetPeriods[index - 1].name;
+      budgetDetails[period.key][carry > 0 ? 'income' : 'expense'].unshift({
+        icon: '🔁', label: `${previousName}${carry > 0 ? '结余' : '赤字'}结转`, amount: Math.abs(carry),
+      });
+    }
+    return { ...period, inc: income, exp: expense, balance };
+  });
+
+  // 建议转账直接引用预算明细中的本月支出。
   const monthlyExpenseForTransfer = sumDetailExp('monthly');
   const campusShortfallForTransfer = Math.max(budget.needs.campusCard - (current.accounts.campusCard ?? 0), 0);
   const repaymentNeedForTransfer = current.accounts.creditMonthly ?? 0;
@@ -1529,9 +1561,7 @@ export default function ReconcilePage() {
       - budget.needs.campusCard,
     0,
   );
-  const livingShortfallForTransfer = Math.max(livingNeedForTransfer - (current.accounts.livingBank ?? 0), 0);
-  // 校园卡走信用卡，不占工资 → 不计入「收入要补齐」的必要账户
-  const essentialTotalForTransfer = repaymentShortfallForTransfer + livingShortfallForTransfer;
+  const monthlyLivingShortfall = Math.max(livingNeedForTransfer - (current.accounts.livingBank ?? 0), 0);
   const incomeAvailableForTransfer = current.accounts.incomeBank ?? 0;
   const raiseSavingsSettings = resolveRaiseSavingsSettings(config.raiseSavings);
   const raiseSavings = calculateRaiseSavings({
@@ -1541,26 +1571,23 @@ export default function ReconcilePage() {
     settings: config.raiseSavings,
     saved: current.raiseSavingsByMonth?.[curYM],
   });
+  const livingTransfer = calculateLivingTransfer({
+    monthlyShortfall: monthlyLivingShortfall,
+    monthlyBalances: budgetRows.map(row => row.balance),
+    incomeBalance: incomeAvailableForTransfer,
+    raiseSavingsRemaining: raiseSavings.remaining,
+    repaymentShortfall: repaymentShortfallForTransfer,
+  });
+  const livingShortfallForTransfer = livingTransfer.transfer;
+  // 校园卡走信用卡，不占工资；生活建议封顶，未补足的需求仍保留缺口提示。
+  const essentialTotalForTransfer = repaymentShortfallForTransfer + livingShortfallForTransfer;
   const {
     needsRedemption: needsRedemptionForTransfer,
     afterEssentials: incomeAfterEssentialsForTransfer,
     invest: investForTransfer,
     wishJar: wishJarForTransfer,
     consumption: consumptionForTransfer,
-  } = calculateTransferAllocation(incomeAvailableForTransfer, essentialTotalForTransfer, raiseSavings.remaining);
-
-  // 月内结余结转：月外吸纳月内的本层结余（正→月外收入，负→月外支出）
-  const monthlyBalance = sumDetailInc('monthly') - sumDetailExp('monthly');
-  if (monthlyBalance >= 0) {
-    budgetDetails.beyond.income.unshift({ icon: '🔁', label: '月内结余结转', amount: monthlyBalance, note: '月内 (本月余) 结余' });
-  } else {
-    budgetDetails.beyond.expense.unshift({ icon: '🔁', label: '月内赤字结转', amount: -monthlyBalance, note: '月内 (本月余) 赤字' });
-  }
-
-  const budgetRows: { key: BudgetKey; name: string; inc: number; exp: number }[] = [
-    { key: 'monthly', name: '月内 (本月余)', inc: sumDetailInc('monthly'), exp: sumDetailExp('monthly') },
-    { key: 'beyond',  name: '月外 (跨月)',   inc: sumDetailInc('beyond'),  exp: sumDetailExp('beyond') },
-  ];
+  } = calculateTransferAllocation(incomeAvailableForTransfer, repaymentShortfallForTransfer + livingTransfer.need, raiseSavings.remaining);
 
   // 配平转账拆成独立的「单腿」：每条都是同币种账户互转（或一笔真换汇），可分开调、分开执行
   type FundingLegOp = 'cnyBufferToInvest' | 'investUsdToBuffer' | 'bufferUsdToInvest' | 'investCnyToBuffer' | 'forex';
@@ -2374,10 +2401,11 @@ export default function ReconcilePage() {
                 style={{ backgroundColor: isOpen ? '#e8f0fe' : i % 2 === 0 ? '#fafafa' : '#fff' }}
               >
                 <span className="reconcile-budget-heading">
-                  <span style={{ fontSize: 13, fontWeight: 600, color: isOpen ? C.blue : '#202124' }}>{row.name}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: isOpen ? C.blue : '#202124' }}>
+                    {row.name} <span aria-hidden="true" style={{ fontSize: 11, color: C.sub }}>{isOpen ? '▾' : '▸'}</span>
+                  </span>
                   <span className="reconcile-budget-balance" style={{ color: balance >= 0 ? C.red : C.green }}>
                     {balance >= 0 ? '+' : '-'}¥{formatCurrency(Math.abs(balance))}
-                    <span style={{ fontSize: 11, color: C.sub, display: 'inline-block', transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</span>
                   </span>
                 </span>
                 <span className="reconcile-budget-flows">
@@ -2432,7 +2460,7 @@ export default function ReconcilePage() {
                     </div>
                   )}
                   <div className="reconcile-wrap-row" style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 14px', backgroundColor: balance >= 0 ? '#fce8e6' : '#e6f4ea', fontSize: 13, fontWeight: 600 }}>
-                    <span style={{ color: C.sub }}>本层结余</span>
+                    <span style={{ color: C.sub }}>{row.name}结余</span>
                     <span style={{ color: balance >= 0 ? C.red : C.green, fontVariantNumeric: 'tabular-nums' }}>
                       {balance >= 0 ? '+' : '-'}¥{formatCurrency(Math.abs(balance))}
                     </span>
@@ -2485,9 +2513,7 @@ export default function ReconcilePage() {
             {
               key: 'living',
               rec: livingShortfallForTransfer,
-              calc: creditInThisMonth
-                ? `月需¥${fmtInt(livingNeedForTransfer)}（月内支出¥${fmtInt(monthlyExpenseForTransfer)} − 还款¥${fmtInt(repaymentShortfallForTransfer)} − 校园卡¥${fmtInt(budget.needs.campusCard)}）− 余¥${fmtInt(current.accounts.livingBank ?? 0)}`
-                : `月需¥${fmtInt(livingNeedForTransfer)}（月内支出¥${fmtInt(monthlyExpenseForTransfer)} − 校园卡¥${fmtInt(budget.needs.campusCard)}）− 余¥${fmtInt(current.accounts.livingBank ?? 0)}`,
+              calc: `本月待补¥${formatCurrency(monthlyLivingShortfall)} · 负结余预留¥${formatCurrency(livingTransfer.deficitReserve)} · 可用¥${formatCurrency(livingTransfer.available)}`,
             },
             {
               key: 'consumption',
@@ -2510,7 +2536,7 @@ export default function ReconcilePage() {
               ? Math.max(parseAmountPart(localTransferred[row.key]), 0)
               : parseAmountPart(localTransferred[row.key]);
             const remain = roundMoney(Math.max(row.rec - transferred, 0));
-            const formatTransferAmount = row.key === 'raiseSavings' ? formatCurrency : fmtInt;
+            const formatTransferAmount = row.key === 'raiseSavings' || row.key === 'living' ? formatCurrency : fmtInt;
             const header = row.key === 'campusCard'
               ? { label: '补充必要', amount: essentialTotalForTransfer, color: C.blue }
               : row.key === 'consumption'
@@ -2544,7 +2570,7 @@ export default function ReconcilePage() {
                       <AmountInput
                         ref={(el) => { transferInputRefs.current[i] = el; }}
                         value={localTransferred[row.key]}
-                        decimalPlaces={row.key === 'raiseSavings' ? 2 : undefined}
+                        decimalPlaces={row.key === 'raiseSavings' || row.key === 'living' ? 2 : undefined}
                         onChange={(v) => setLocalTransferred((p) => ({ ...p, [row.key]: /^-?0\d/.test(v) ? (v.replace(/^(-?)0+/, '$1') || '0') : v }))}
                         onBlur={row.key === 'raiseSavings' ? (event) => {
                           const amount = String(roundMoney(Math.max(parseAmountPart(event.currentTarget.value), 0)));

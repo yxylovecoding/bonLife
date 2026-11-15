@@ -4,7 +4,7 @@ import { getAccountStorage } from '../utils/accountCache';
 import { mergeSyncValue } from '../utils/syncMerge';
 import { DEFAULT_CONFIG, useConfigStore } from '../stores/configStore';
 import { DEFAULT_SNAPSHOT, useSnapshotStore } from '../stores/snapshotStore';
-import { calculateRaiseSavings, calculateTransferAllocation, resolveRaiseSavingsSettings, resolveRecurringIncomeBaseline } from './reconcileTransfers';
+import { calculateLivingTransfer, calculateRaiseSavings, calculateTransferAllocation, resolveRaiseSavingsSettings, resolveRecurringIncomeBaseline } from './reconcileTransfers';
 
 const today = '2026-10-21';
 const month = '2026-10';
@@ -14,6 +14,41 @@ const income = (amount: number, tags: string, patch: Partial<BillIncomeItem> = {
 const monthlyIncome = [income(6060, '周期收入'), income(1000, '波动收入')];
 const savings = (items = monthlyIncome) => calculateRaiseSavings({
   incomeItems: items, today, saved: useSnapshotStore.getState().current.raiseSavingsByMonth?.[month],
+});
+
+describe('生活转账预留负结余', () => {
+  const input = { monthlyShortfall: 1000, monthlyBalances: [500, -200, -300], incomeBalance: 5000, raiseSavingsRemaining: 500, repaymentShortfall: 200 };
+
+  it('本月待补追加最大累计缺口，不重复相加已结转的赤字', () => {
+    expect(calculateLivingTransfer(input)).toEqual({ deficitReserve: 300, need: 1300, available: 4300, transfer: 1300 });
+    expect(calculateLivingTransfer({ ...input, monthlyBalances: [-300, -300, -300] }).deficitReserve).toBe(300);
+  });
+
+  it.each([[500, 100, 0], [0, 0, 0], [-100, 300, 500]])('任一月份的缺口都预留，恢复正结余不遗漏先前缺口：%j', (...monthlyBalances) => {
+    const result = calculateLivingTransfer({ ...input, monthlyBalances });
+    expect(result.transfer).toBe(monthlyBalances[0] < 0 ? 1100 : 1000);
+  });
+
+  it('先扣优先储蓄、还款，生活总建议与剩余可用资金取小', () => {
+    expect(calculateLivingTransfer({ ...input, incomeBalance: 1800.25 })).toEqual({
+      deficitReserve: 300, need: 1300, available: 1100.25, transfer: 1100.25,
+    });
+    expect(calculateLivingTransfer({ ...input, incomeBalance: 600 }).transfer).toBe(0);
+    expect(calculateLivingTransfer({ ...input, incomeBalance: -100 }).transfer).toBe(0);
+  });
+
+  it('追加预留后重新计算消费、心愿和理财，所有建议不重复分配同一笔钱', () => {
+    const living = calculateLivingTransfer(input);
+    const allocation = calculateTransferAllocation(input.incomeBalance, input.repaymentShortfall + living.need, input.raiseSavingsRemaining);
+    expect(allocation.afterEssentials).toBe(3000);
+    expect(input.raiseSavingsRemaining + input.repaymentShortfall + living.transfer + allocation.invest + allocation.wishJar + allocation.consumption).toBe(input.incomeBalance);
+  });
+
+  it.each([0.01, 0.5, 1.01, 1.5, 2.5])('只剩 %s 元时，舍入后不超分也不产生负建议', amount => {
+    const result = calculateTransferAllocation(amount, 0, 0);
+    expect(result.invest + result.wishJar + result.consumption).toBeCloseTo(amount);
+    expect(Math.min(result.invest, result.wishJar, result.consumption)).toBeGreaterThanOrEqual(0);
+  });
 });
 
 describe('涨薪优先储蓄计算', () => {

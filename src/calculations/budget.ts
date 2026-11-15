@@ -26,11 +26,23 @@ export function budgetCalendarTags(tags: DailyTag[], today: Date, context?: Inte
   if (!context || !start) return tags;
   const year = today.getFullYear(), month = today.getMonth();
   const from = `${year}-${String(month + 1).padStart(2, '0')}-01`;
-  const end = new Date(year, month + 2, 0);
+  const end = new Date(year, month + 3, 0);
   const to = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${end.getDate()}`;
   const map = Object.fromEntries(tags.map(t => [t.date, t.tag]));
   for (const date of dateRange(from, to)) if (date >= start) map[date] = resolveDailyContext(date, map[date], context).tag;
   return Object.entries(map).map(([date, tag]) => ({ date, tag }));
+}
+
+/** 每月沿用上月结余；负值只结转一次，供明细与转账共用。 */
+export function rollBudgetMonths(months: readonly { income: number; expense: number }[]) {
+  let balance = 0;
+  return months.map(month => {
+    const carry = balance;
+    const income = Math.round((month.income + Math.max(carry, 0)) * 100) / 100;
+    const expense = Math.round((month.expense + Math.max(-carry, 0)) * 100) / 100;
+    balance = Math.round((income - expense) * 100) / 100;
+    return { income, expense, carry, balance };
+  });
 }
 
 export interface AccountBalances {
