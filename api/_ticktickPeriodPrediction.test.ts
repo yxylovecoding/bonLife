@@ -79,9 +79,9 @@ describe('syncPeriodPredictionTask', () => {
     expect(api.createTask).not.toHaveBeenCalled();
   });
 
-  it('本周期完成后移除自动补建的重复待办，保留完成历史', async () => {
+  it.each([['当天'], ['当天', '活']])('本周期完成后兼容新旧标签清理重复待办 %j', async (...tags) => {
     await predict();
-    const duplicate = reminder();
+    const duplicate = reminder({ tags });
     api.getTask.mockResolvedValueOnce(duplicate);
     expect(await syncPeriodPredictionTask(api as any, { connection, tasks: [duplicate],
       completedTasks: [completed()], today: '2026-10-27' })).toMatchObject({ created: 0, updated: 0, deleted: 1 });
@@ -143,7 +143,7 @@ describe('syncPeriodPredictionTask', () => {
       title: PERIOD_PREDICTION_TITLE,
       startDate: '2026-10-27T00:00:00+0800',
       priority: 5,
-      tags: ['当天', '活'],
+      tags: ['当天'],
     }));
   });
 
@@ -161,7 +161,7 @@ describe('syncPeriodPredictionTask', () => {
       dueDate: '2026-10-27T00:00:00+0800',
       isAllDay: true,
       priority: 5,
-      tags: ['当天', '活'],
+      tags: ['当天'],
     };
     const result = await syncPeriodPredictionTask(api as any, { connection, completedTasks: [], tasks: [existingTask as any], today: '2026-10-08' });
     expect(result).toEqual({ updated: 0, created: 0 });
@@ -197,7 +197,7 @@ describe('syncPeriodPredictionTask', () => {
     await syncPeriodPredictionTask(api as any, { connection, completedTasks: [], today: '2026-10-08', tasks: [{
       id: 't1', projectId: 'p1', title: PERIOD_PREDICTION_TITLE, status: 0, tags,
     } as any] });
-    expect(api.updateTask).toHaveBeenCalledWith('t1', expect.objectContaining({ tags: [...tags, '当天', '活'] }));
+    expect(api.updateTask).toHaveBeenCalledWith('t1', expect.objectContaining({ tags: [...tags, '当天'] }));
   });
   it('日期与必要标签一致时，不因用户的额外标签重复写入', async () => {
     vi.mocked(await import('./_lifeSwimming.js')).readSwimmingCycle.mockResolvedValue({
@@ -206,8 +206,22 @@ describe('syncPeriodPredictionTask', () => {
     });
     expect(await syncPeriodPredictionTask(api as any, { connection, completedTasks: [], today: '2026-10-08', tasks: [{
       id: 't1', projectId: 'p1', title: PERIOD_PREDICTION_TITLE, status: 0, isAllDay: true, priority: 5,
-      startDate: '2026-10-27T00:00:00+0800', dueDate: '2026-10-27T00:00:00+0800', tags: ['routine', '当天', '活'],
+      startDate: '2026-10-27T00:00:00+0800', dueDate: '2026-10-27T00:00:00+0800', tags: ['routine', '当天'],
     } as any] })).toEqual({ updated: 0, created: 0 });
+    expect(api.updateTask).not.toHaveBeenCalled();
+  });
+
+  it('已有提醒仅移除活，保留其他标签，后续同步不补回', async () => {
+    await predict();
+    const existing = reminder({ tags: ['routine', '活', '当天', '个人标签'] });
+    expect(await syncPeriodPredictionTask(api as any, { connection, completedTasks: [],
+      tasks: [existing], today: '2026-10-08' })).toEqual({ updated: 1, created: 0 });
+    const patch = api.updateTask.mock.calls[0][1];
+    expect(patch).toMatchObject({ tags: ['routine', '当天', '个人标签'],
+      startDate: existing.startDate, dueDate: existing.dueDate, priority: existing.priority });
+    api.updateTask.mockClear();
+    expect(await syncPeriodPredictionTask(api as any, { connection, completedTasks: [],
+      tasks: [{ ...existing, ...patch }], today: '2026-10-08' })).toEqual({ updated: 0, created: 0 });
     expect(api.updateTask).not.toHaveBeenCalled();
   });
 });

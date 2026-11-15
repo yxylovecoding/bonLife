@@ -34,7 +34,7 @@ export async function syncPeriodPredictionTask(api: TickTickApi, options: {
   if (completed.length) {
     const duplicateDates = new Set([targetDate, ...completed.map(reminderDate).filter((date): date is string => Boolean(date))]);
     const isDuplicate = (task: TickTickTask) => isReminder(task) && pending(task)
-      && task.isAllDay === true && task.priority === 5 && ['当天', '活'].every(tag => task.tags?.includes(tag))
+      && task.isAllDay === true && task.priority === 5 && task.tags?.includes('当天')
       && !task.repeatFlag && !task.parentId && !task.content && !task.desc && !task.items?.length
       && duplicateDates.has(reminderDate(task) ?? '')
       && calendarDateInTimeZone(task.startDate) === calendarDateInTimeZone(task.dueDate);
@@ -53,7 +53,7 @@ export async function syncPeriodPredictionTask(api: TickTickApi, options: {
   const existing = tasks.find(task => isReminder(task) && pending(task));
 
   const priority = 5;
-  const tags = [...new Set([...(existing?.tags ?? []), '当天', '活'])];
+  const tags = [...new Set([...(existing?.tags ?? []).filter(tag => tag !== '活'), '当天'])];
   const startDate = `${targetDate}T00:00:00+0800`;
   const dueDate = `${targetDate}T00:00:00+0800`;
   const isAllDay = true;
