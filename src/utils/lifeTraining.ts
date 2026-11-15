@@ -5,7 +5,9 @@ import { swimmingHairWashDates, type HairWashSchedule } from './lifeSwimming.js'
 import { isCalendarDate } from './outlookCalendar.js';
 
 export const TRAINING_MARKER = '运动是生活的第一个锚点';
-export const trainingProjectKey = (name: string) => name.normalize('NFKC').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+export const trainingProjectName = (name: string) => name.normalize('NFKC')
+  .replace(/\s*\(\s*\d+(?:\.\d+)?\s*(?:m|h|min|mins|分钟|小时)\s*\)/gi, '').trim();
+export const trainingProjectKey = (name: string) => trainingProjectName(name).replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
 export const isTrainingTitle = (title: string) => trainingProjectKey(title).includes(TRAINING_MARKER)
   && trainingProjectKey(title) !== TRAINING_MARKER;
 export const trainingName = (title: string) => (title.includes('运动') ? title.slice(0, title.indexOf('运动')).replace(/[\s·—\-:：]+$/u, '').trim() : title) || title;
@@ -23,6 +25,7 @@ export function trainingTags(project: { name: string; tags?: TrainingTag[] }): T
 export interface TrainingTask {
   id: string;
   key?: string;
+  aliases?: string[];
   rotation?: boolean;
   tags?: TrainingTag[];
   name: string;
@@ -38,6 +41,7 @@ export interface TrainingCompletion { project: string; date: string }
 export interface TrainingSource {
   year: number; tasks: TrainingTask[]; connected: boolean; syncedAt: string | null;
   completions?: TrainingCompletion[]; entries?: LifeEntries; periodDays?: string[];
+  calendarCompletions?: TrainingCompletion[];
   settings?: TrainingSettings;
   hairWash?: HairWashSchedule | null;
 }
@@ -72,13 +76,19 @@ export function trainingLibrary(tasks: TrainingTask[], settings = DEFAULT_TRAINI
   const reusable = (name: string): TrainingTask => ({ id: `template:${name}`, key: trainingProjectKey(name), name, title: name,
     notes: '', rotation: false, schedule: '', dates: [], links: [] });
   const library = new Map(['爬坡', '游泳'].map((name) => [trainingProjectKey(name), reusable(name)]));
-  for (const task of tasks) library.set(trainingIdentity(task), { ...task, key: trainingIdentity(task), rotation: task.rotation ?? true });
+  for (const task of tasks) {
+    const previous = [...library.values()].find(value => trainingProjectKey(value.name) === trainingProjectKey(task.name));
+    const key = previous ? trainingIdentity(previous) : trainingIdentity(task);
+    library.set(key, { ...task, key, name: trainingProjectName(task.name), rotation: task.rotation ?? true,
+      aliases: [...new Set([...(previous?.aliases ?? []), ...(task.aliases ?? []), trainingIdentity(task)])] });
+  }
   for (const project of settings.projects) {
     const previous = library.get(project.key) ?? [...library.values()].find(task => trainingProjectKey(task.name) === trainingProjectKey(project.name));
     // A local reusable project can later gain a same-name TickTick task. Keep
     // its saved identity and settings, but bind it to that task only once.
     if (previous && trainingIdentity(previous) !== project.key) library.delete(trainingIdentity(previous));
-    library.set(project.key, { ...(previous ?? reusable(project.name)), ...project, id: previous?.id ?? `template:${project.key}` });
+    library.set(project.key, { ...(previous ?? reusable(project.name)), ...project, name: trainingProjectName(project.name),
+      aliases: [...new Set([...(previous?.aliases ?? []), ...(previous ? [trainingIdentity(previous)] : [])])], id: previous?.id ?? `template:${project.key}` });
   }
   return [...library.values()].filter((task) => !isTrainingCategory(task.name)).map((task) => ({ ...task, tags: trainingTags(task) }));
 }
@@ -92,12 +102,30 @@ export function reuseTrainingProjects(tasks: TrainingTask[]): TrainingRecord {
 export function recordedTrainingProjects(record: TrainingRecord, tasks: TrainingTask[]) {
   if (record.effort === 'rest') return [];
   const keys = new Set(tasks.map(trainingIdentity));
-  const names = new Map(tasks.map((task) => [trainingProjectKey(task.name), trainingIdentity(task)]));
+  const resolve = trainingProjectResolver(tasks);
   // New records carry explicit project identities. Legacy/manual text is matched
   // only as an exact exercise heading, never as a mention such as “今天没练有氧”.
-  return [...new Set((record.projects?.map(key => keys.has(key) ? key : names.get(trainingProjectKey(key)) ?? '')
-    ?? record.plan.split('\n').map((line) => names.get(trainingProjectKey(line.split(' · ')[0].trim())) ?? ''))
+  return [...new Set((record.projects?.map(key => resolve(key) ?? '')
+    ?? record.plan.split('\n').map((line) => resolve(line.split(' · ')[0].trim()) ?? ''))
     .filter((key) => keys.has(key)))];
+}
+
+function trainingProjectResolver(tasks: TrainingTask[]) {
+  const names = new Map(tasks.flatMap(task => [task.name, trainingIdentity(task), ...(task.aliases ?? [])]
+    .map(name => [trainingProjectKey(name), trainingIdentity(task)] as const)));
+  return (value: string) => {
+    const key = trainingProjectKey(value);
+    // Older completion snapshots removed parentheses before storing the key.
+    return names.get(key) ?? names.get(key.replace(/\d+(?:m|h)$/i, ''));
+  };
+}
+
+export function completedTrainingRecord(date: string, tasks: TrainingTask[], saved?: TrainingRecord, completions: TrainingCompletion[] = []): TrainingRecord {
+  const imported = recordedTrainingProjects({ plan: '', projects: completions.filter(item => item.date === date).map(item => item.project),
+    effort: 'normal', completed: true }, tasks);
+  const projects = [...new Set([...(saved?.completed ? recordedTrainingProjects(saved, tasks) : []), ...imported])];
+  return { plan: tasks.filter(task => projects.includes(trainingIdentity(task))).map(task => task.name).join('\n'),
+    projects, effort: 'normal', completed: projects.length > 0, mode: projects.length ? 'manual' : 'auto' };
 }
 
 // Personal defaults based on the user's template, not physiological performance guarantees.
@@ -203,8 +231,7 @@ export function rollingTrainingPlan(year: number, month: number, today: string, 
     ...trainingLibrary([...source.tasks].sort((a, b) => compareTrainingOrder(a.id, b.id)), source.settings)]
     .map((task) => [trainingIdentity(task), task])).values()];
   const byKey = new Map(tasks.map((task) => [trainingIdentity(task), task]));
-  const byName = new Map(tasks.map(task => [trainingProjectKey(task.name), trainingIdentity(task)]));
-  const resolveKey = (key: string) => byKey.has(key) ? key : byName.get(trainingProjectKey(key));
+  const resolveKey = trainingProjectResolver(tasks);
   const entries = { ...source.entries, ...localEntries };
   const actual = new Map<string, Set<string>>();
   const add = (date: string, projects: string[]) => {

@@ -5,6 +5,7 @@ import { entriesKey, LIFE_SETTINGS_KEY, LIFE_TRAINING_ENTRIES_KEY } from './_bon
 import { createHash } from 'node:crypto';
 import { DAILY_PLAN_KEY } from './_ticktickDailyPlan';
 import { DEFAULT_CYCLE } from '../src/utils/bonLife';
+import { CALENDAR_TRAINING_KEY } from './_lifeCalendarTraining';
 
 const { data, evalMock } = vi.hoisted(() => ({ data: new Map<string, any>(), evalMock: vi.fn() }));
 vi.mock('@vercel/kv', () => ({ kv: {
@@ -37,6 +38,14 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
 describe('TickTick 训练来源', () => {
+  it('单独返回日历完成来源，不把待办完成和未来计划标为日历记录', async () => {
+    const imported = [{ project: '爬坡（45m）', date: '2026-10-04' }];
+    data.set(CALENDAR_TRAINING_KEY, { completions: imported });
+    const result = await readTrainingSource(2026);
+    expect(result.calendarCompletions).toEqual(imported);
+    expect(result.completions).toEqual(imported);
+    expect(result.tasks).toEqual([]); // Matches the existing climb project, not a second exercise.
+  });
   it('按锚点标题识别，兼容肤色与空格，排除父标题和完成项', () => {
     const result = selectTrainingTasks([task(), task({ id: 'emoji', title: '有氧 - 运动💪是生活的第一个锚点 🪝' }),
       task({ title: '运动💪🏻是生活的第一个锚点🪝' }), task({ title: '健身用品' }), task({ status: 2 }), task({ completedTime: '2026-10-01T00:00:00Z' })]);

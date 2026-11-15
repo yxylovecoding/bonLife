@@ -101,7 +101,7 @@ export async function readTrainingSource(year: number, proposed?: TrainingSnapsh
   const completions = [...new Map([...(current?.completions ?? []), ...calendarCompletions]
     .map(item => [`${trainingProjectKey(item.project)}:${item.date}`, item])).values()];
   return { year, tasks, hairWash: current?.hairWash ?? null,
-    completions, entries, periodDays: periods, settings: settings?.trainingProjects ?? DEFAULT_TRAINING_SETTINGS,
+    completions, calendarCompletions, entries, periodDays: periods, settings: settings?.trainingProjects ?? DEFAULT_TRAINING_SETTINGS,
     connected: Boolean(connection), syncedAt: current?.syncedAt ?? null };
 }
 

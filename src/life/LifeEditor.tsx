@@ -8,11 +8,16 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { BODY_FIELDS, entrySummary, parseLifeEdit, LIFE_LABELS, LIFE_TEXT_LIMIT, type BodyRecord, type CycleSettings, type LifeEntry, type LifeEntries } from '../utils/bonLife';
 import { CYCLE_GUIDANCE, visibleCycleDay } from '../utils/lifeCycle';
 import { readDraft, saveDraft, removeDraft, LifeError, lifeRequest, type LifeDraft } from './client';
-import { automaticTraining, plannedTraining, recordedTrainingProjects, reuseTrainingProjects, trainingIdentity, type TrainingTask } from '../utils/lifeTraining';
+import { completedTrainingRecord, DEFAULT_TRAINING_SETTINGS, isTrainingCategory, parseTrainingSettings, recordedTrainingProjects,
+  trainingIdentity, trainingLibrary as buildTrainingLibrary, trainingProjectKey, trainingProjectName,
+  type TrainingCompletion, type TrainingSettings, type TrainingTask } from '../utils/lifeTraining';
 
-export default function LifeEditor({ initial, owner, cycle, periodDays, trainingTasks, trainingLibrary = [], skinSettings = DEFAULT_SKIN_SETTINGS, skinEntries, symptomEntries, onSave, onClose, onExpired }: {
+export default function LifeEditor({ initial, owner, cycle, periodDays, trainingLibrary = [], trainingCompletions = [], calendarCompletions = [],
+  trainingSettings = DEFAULT_TRAINING_SETTINGS, onTrainingSettings, skinSettings = DEFAULT_SKIN_SETTINGS, skinEntries, symptomEntries, onSave, onClose, onExpired }: {
   initial: LifeDraft; owner: string; cycle: CycleSettings; periodDays: string[];
-  trainingTasks?: TrainingTask[]; trainingLibrary?: TrainingTask[]; skinSettings?: SkinSettings; skinEntries: LifeEntries; symptomEntries: LifeEntries;
+  trainingLibrary?: TrainingTask[]; trainingCompletions?: TrainingCompletion[]; calendarCompletions?: TrainingCompletion[];
+  trainingSettings?: TrainingSettings; onTrainingSettings?: (settings: TrainingSettings) => void;
+  skinSettings?: SkinSettings; skinEntries: LifeEntries; symptomEntries: LifeEntries;
   onSave: (entry: LifeEntry, draft: LifeDraft) => void; onClose: () => void; onExpired: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -21,16 +26,20 @@ export default function LifeEditor({ initial, owner, cycle, periodDays, training
   const [error, setError] = useState('');
   const [conflict, setConflict] = useState<LifeEntry | null>(null);
   const [discarding, setDiscarding] = useState(false);
+  const [addingProject, setAddingProject] = useState(false);
+  const [projectName, setProjectName] = useState('');
+  const projectMutation = useRef(crypto.randomUUID());
   const attempted = useRef(false);
   const startedOnBackdrop = useRef(false);
-  const dirty = JSON.stringify(draft) !== JSON.stringify(initial) || Boolean(readDraft(owner, draft));
+  const dirty = Boolean(projectName.trim()) || JSON.stringify(draft) !== JSON.stringify(initial) || Boolean(readDraft(owner, draft));
   const phase = visibleCycleDay(draft.date, cycle, periodDays);
   const guidance = phase ? CYCLE_GUIDANCE[phase.phase] : null;
-  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date());
   const skin = draft.kind === 'skin' ? resolveSkinRecord(draft.date, skinSettings, skinEntries, draft.skin) : undefined;
-  const training = draft.kind === 'training' ? plannedTraining(draft.date, today, trainingTasks, cycle, periodDays, draft.training) : undefined;
+  const training = draft.kind === 'training' ? completedTrainingRecord(draft.date, trainingLibrary, draft.training, trainingCompletions) : undefined;
   const chosenProjects = training ? recordedTrainingProjects(training, trainingLibrary) : [];
-  const chosenTasks = trainingLibrary.filter((task) => chosenProjects.includes(trainingIdentity(task)));
+  const manualProjects = draft.training?.completed ? recordedTrainingProjects(draft.training, trainingLibrary) : [];
+  const importedProjects = completedTrainingRecord(draft.date, trainingLibrary, undefined, trainingCompletions).projects ?? [];
+  const calendarProjects = completedTrainingRecord(draft.date, trainingLibrary, undefined, calendarCompletions).projects ?? [];
   const isSymptom = draft.kind === 'eyes' || draft.kind === 'discomfort';
   const history = useMemo(() => initial.kind === 'eyes' || initial.kind === 'discomfort' ? symptomHistory(initial.kind, symptomEntries) : [], [initial.kind, symptomEntries]);
 
@@ -64,12 +73,37 @@ export default function LifeEditor({ initial, owner, cycle, periodDays, training
     return () => window.removeEventListener('beforeunload', beforeUnload);
   }, [dirty]);
 
+  async function addProject() {
+    if (busy || attempted.current || !onTrainingSettings) return;
+    attempted.current = true; setBusy(true); setError('');
+    try {
+      const name = trainingProjectName(projectName);
+      if (isTrainingCategory(name)) throw new Error('请填写具体运动项目');
+      if (trainingLibrary.some(task => trainingProjectKey(task.name) === trainingProjectKey(name))) throw new Error('已存在同名运动项目');
+      const settings = parseTrainingSettings({ ...trainingSettings, projects: [...trainingSettings.projects,
+        { key: projectMutation.current, name, notes: '', rotation: false }] });
+      const result = await lifeRequest<{ settings: TrainingSettings }>('POST', { action: 'save-training-settings',
+        year: Number(draft.date.slice(0, 4)), settings, mutationId: projectMutation.current });
+      const library = buildTrainingLibrary(trainingLibrary, result.settings);
+      const project = library.find(task => trainingIdentity(task) === projectMutation.current);
+      if (!project) throw new Error('项目保存未确认，请重试');
+      onTrainingSettings(result.settings);
+      change({ training: completedTrainingRecord(draft.date, library,
+        { plan: '', effort: 'normal', completed: true, projects: [...manualProjects, trainingIdentity(project)] }) });
+      setAddingProject(false); setProjectName(''); projectMutation.current = crypto.randomUUID();
+    } catch (cause) {
+      if (cause instanceof LifeError && cause.status === 401) onExpired();
+      setError(cause instanceof Error ? cause.message : '添加失败，请重试');
+    } finally { setBusy(false); attempted.current = false; }
+  }
+
   async function save() {
     if (busy || attempted.current) return;
     attempted.current = true;
     setBusy(true); setError(''); persist(draft);
     try {
-      let savedDraft = skin ? { ...draft, skin } : training ? { ...draft, training } : draft;
+      let savedDraft = skin ? { ...draft, skin } : training
+        ? { ...draft, training: draft.training ?? completedTrainingRecord(draft.date, trainingLibrary) } : draft;
       if (draft.kind === 'eyes' || draft.kind === 'discomfort') {
         const symptoms = { ...symptomObservations(draft.kind, draft[draft.kind]) };
         for (const [area, name] of Object.entries(draft.symptomNames ?? {})) {
@@ -97,10 +131,10 @@ export default function LifeEditor({ initial, owner, cycle, periodDays, training
       startedOnBackdrop.current = false;
       if (outside) dismiss();
     }}>
-    <form className="persistent-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+    <form className="persistent-form" onSubmit={(event) => { event.preventDefault(); if (addingProject) void addProject(); else void save(); }}>
       <div className="persistent-form-body">
       <div className="life-editor-heading"><h2 id="life-editor-title">{LIFE_LABELS[draft.kind]} <span>{draft.date.replace(/-/g, '.')}</span></h2>
-        {guidance && <span className={`life-period-label phase-${phase?.phase}`}>{phase?.estimated ? '预计·' : ''}{guidance.label}</span>}</div>
+        {guidance && draft.kind !== 'training' && <span className={`life-period-label phase-${phase?.phase}`}>{phase?.estimated ? '预计·' : ''}{guidance.label}</span>}</div>
       {(draft.kind === 'skin' || draft.kind === 'eyes') && <LifeMakeupFields value={draft.makeup} busy={busy} onChange={(makeup) => change({ makeup })} />}
       {draft.kind === 'skin' && <LifeSkinFields date={draft.date} value={skin} entries={skinEntries} settings={skinSettings} busy={busy} onChange={(skin) => change({ skin })} />}
       {(draft.kind === 'eyes' || draft.kind === 'discomfort') && <LifeSymptomFields kind={draft.kind}
@@ -114,34 +148,27 @@ export default function LifeEditor({ initial, owner, cycle, periodDays, training
             change({ body });
           }} /></label>)}</div>}
       {draft.kind === 'training' && <div className="life-training-editor">
-        <fieldset className="life-skin-choices" disabled={busy}><legend>运动项目</legend><div>{trainingLibrary.map((task) => <button type="button" key={trainingIdentity(task)}
-          aria-pressed={chosenProjects.includes(trainingIdentity(task))} onClick={() => {
+        <fieldset className="life-skin-choices" disabled={busy}><legend>做了什么</legend><div>{trainingLibrary.map((task) => <button type="button" key={trainingIdentity(task)}
+          aria-pressed={chosenProjects.includes(trainingIdentity(task))} disabled={importedProjects.includes(trainingIdentity(task))}
+          title={calendarProjects.includes(trainingIdentity(task)) ? '日历记录' : importedProjects.includes(trainingIdentity(task)) ? 'TickTick 已完成' : undefined} onClick={() => {
             const key = trainingIdentity(task);
-            const keys = chosenProjects.includes(key) ? chosenProjects.filter((value) => value !== key) : [...chosenProjects, key];
-            try { change({ training: reuseTrainingProjects(trainingLibrary.filter((value) => keys.includes(trainingIdentity(value)))) }); setError(''); }
+            const keys = manualProjects.includes(key) ? manualProjects.filter((value) => value !== key) : [...manualProjects, key];
+            try { change({ training: completedTrainingRecord(draft.date, trainingLibrary,
+              { plan: '', projects: keys, effort: 'normal', completed: true }) }); setError(''); }
             catch (cause) { setError(cause instanceof Error ? cause.message : '运动项目选择失败'); }
-          }}>{task.name}{task.tags?.length ? <small className="life-training-tags">{task.tags.join(' · ')}</small> : null}</button>)}</div></fieldset>
-        {Boolean(chosenTasks.length) && <details className="life-training-details"><summary>运动内容</summary>
-          {chosenTasks.map((task) => <div key={task.id}><p>{task.name}</p>{task.notes && <p className="life-training-notes">{task.notes}</p>}
-            {task.links.length > 0 && <div className="life-training-links">{task.links.map((link) => <a href={link.url} key={link.url} target="_blank" rel="noreferrer">{link.title} ↗</a>)}</div>}</div>)}
-        </details>}
-        {guidance && <div className="life-guidance"><p><span>运动</span>{guidance.exercise}</p><p><span>饮食</span>{guidance.food}</p></div>}
-        <div className="life-training-mode"><span>{training?.mode === 'auto' ? '自动轮换' : '手动安排'}</span>
-          {training?.mode !== 'auto' && !training?.completed && <button type="button" disabled={busy} onClick={() => change({ training: automaticTraining(draft.date, trainingTasks, cycle, periodDays, training?.effort) })}>恢复自动安排</button>}
-        </div>
-        <label className="life-field">当日强度<select disabled={busy} value={training?.effort ?? 'normal'} onChange={(event) => {
-          const effort = event.target.value as 'normal' | 'easy' | 'rest';
-          change({ training: { ...automaticTraining(draft.date, training?.mode === 'manual' ? chosenTasks : trainingTasks, cycle, periodDays, effort),
-            mode: training?.mode ?? 'auto', completed: training?.completed ?? false } });
-        }}><option value="normal">按计划</option><option value="easy">轻量</option><option value="rest">休息</option></select></label>
-        <label className="life-field">运动计划<textarea aria-label="运动计划" rows={3} maxLength={1000} disabled={busy} value={training?.plan ?? ''}
-          onChange={(event) => change({ training: { effort: 'normal', completed: false, ...training, plan: event.target.value, mode: 'manual', projects: undefined } })} /></label>
-        <label className="life-check"><input type="checkbox" disabled={busy} checked={training?.completed ?? false} onChange={(event) =>
-          change({ training: { plan: '', effort: 'normal', ...training, completed: event.target.checked } })} />已完成</label>
+          }}>{task.name}{calendarProjects.includes(trainingIdentity(task)) ? <small className="life-training-tags">日历</small>
+            : importedProjects.includes(trainingIdentity(task)) ? <small className="life-training-tags">TickTick</small> : null}</button>)}</div></fieldset>
+        {addingProject ? <div className="life-training-add">
+          <label className="life-field">运动项目<input autoFocus maxLength={60} value={projectName} disabled={busy}
+            onChange={event => { setProjectName(event.target.value); projectMutation.current = crypto.randomUUID(); setError(''); }} /></label>
+          <div className="life-training-add-actions"><button type="button" disabled={busy} onClick={() => { setAddingProject(false); setProjectName(''); setError(''); }}>取消</button>
+            <button type="button" disabled={busy || !projectName.trim()} onClick={() => void addProject()}>{busy ? '添加中…' : '添加'}</button></div>
+        </div> : <button type="button" className="life-project-add" disabled={busy || !onTrainingSettings || trainingSettings.projects.length >= 60}
+          onClick={() => { setAddingProject(true); setError(''); }}>＋ 添加运动项目</button>}
       </div>}
-      <label className="life-field">{draft.kind === 'skin' ? '皮肤备注' : draft.kind === 'mood' ? '情绪' : '备注'}
+      {draft.kind !== 'training' && <label className="life-field">{draft.kind === 'skin' ? '皮肤备注' : draft.kind === 'mood' ? '情绪' : '备注'}
       <textarea aria-label={`${LIFE_LABELS[draft.kind]}记录`} autoFocus={draft.kind !== 'skin' && !isSymptom} rows={draft.kind === 'skin' || isSymptom ? 3 : 7} maxLength={LIFE_TEXT_LIMIT}
-        placeholder="写几句话…" value={draft.text} disabled={busy} onChange={(event) => change({ text: event.target.value })} /></label>
+        placeholder="写几句话…" value={draft.text} disabled={busy} onChange={(event) => change({ text: event.target.value })} /></label>}
       {error && <p role="alert" className="life-error">{error}</p>}
       {conflict && <div className="life-conflict"><p>云端记录</p><blockquote>{entrySummary(draft.kind, conflict) || '（空白）'}</blockquote>
         <button type="button" onClick={() => {
@@ -151,7 +178,7 @@ export default function LifeEditor({ initial, owner, cycle, periodDays, training
         }}>保留我的记录并继续编辑</button></div>}
       </div>
       <div className="life-editor-actions"><button type="button" disabled={busy} onClick={close}>{discarding ? '放弃修改' : '取消'}</button>
-        <button type="submit" className="life-primary" disabled={busy || Boolean(conflict)}>{busy ? '保存中…' : '保存'}</button></div>
+        <button type="submit" className="life-primary" disabled={busy || addingProject || Boolean(conflict)}>{busy ? '保存中…' : '保存'}</button></div>
     </form>
   </dialog>;
 }

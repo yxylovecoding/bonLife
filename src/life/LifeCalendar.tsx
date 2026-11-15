@@ -279,10 +279,7 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
         return <button type="button" key={date} disabled={loading || !current || Boolean(error) || (kind === 'training' && trainingSource.busy && !trainingSource.current?.completions)}
           className={`life-day${phase ? ` phase-${phase.phase}` : period ? ' phase-menstrual' : ''}${date === now ? ' is-today' : ''}`}
           aria-label={`${date} ${LIFE_LABELS[kind]} ${phaseLabel}${planStatus ? ` ${planStatus}` : ''}${summary ? `：${summary}` : '：未记录'}`}
-          onClick={() => openEntry({ date, kind, text: '', revision: '', ...entry,
-            ...(planned ? { training: entry?.training && (entry.training.completed || entry.training.mode !== 'auto')
-              ? entry.training : planned } : {}),
-            mutationId: crypto.randomUUID() })}>
+          onClick={() => openEntry({ date, kind, text: '', revision: '', ...entry, mutationId: crypto.randomUUID() })}>
           <span className="life-day-heading"><span className="life-day-number">{Number(date.slice(-2))}</span>{phaseLabel && <span className={`life-period-mark phase-${phase?.phase}`} aria-hidden="true">{phaseLabel}</span>}</span>
           {(kind === 'skin' || kind === 'eyes') && makeupSummary(entry?.makeup).length > 0 && <span className="life-day-text">{makeupSummary(entry?.makeup).join(' · ')}</span>}
           {kind === 'skin' ? <span className="life-day-content">
@@ -327,8 +324,11 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
       }} />}
     {draft && current && !loading && <LifeEditor key={`${draft.kind}:${draft.date}`} initial={{ ...draft,
       makeup: draft.makeup ?? current.entries[`${draft.kind}:${draft.date}`]?.makeup }} owner={owner} skinSettings={skinSettings} skinEntries={skinEntries} symptomEntries={symptomEntries} cycle={cycle} periodDays={current.periodDays} onExpired={onExpired}
-      trainingTasks={rolling ? rolling.byDate.get(draft.date) ?? [] : undefined}
       trainingLibrary={library}
+      trainingCompletions={trainingSource.current?.completions}
+      calendarCompletions={trainingSource.current?.calendarCompletions}
+      trainingSettings={trainingSource.current?.settings}
+      onTrainingSettings={trainingSource.updateSettings}
       onClose={() => setDraft(null)} onSave={(entry, savedDraft) => {
         setData((previous) => previous ? { ...previous, entries: syncMakeupEntries({ ...previous.entries,
           [`${savedDraft.kind}:${savedDraft.date}`]: entry }, savedDraft.date, entry.makeup) } : previous);

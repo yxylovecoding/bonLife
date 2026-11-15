@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CYCLE } from './bonLife';
-import { automaticTraining, parseTrainingSettings, recordedTrainingProjects, reuseTrainingProjects, rollingTrainingPlan, trainingIdentity, trainingLibrary, trainingTags,
+import { automaticTraining, completedTrainingRecord, parseTrainingSettings, recordedTrainingProjects, reuseTrainingProjects, rollingTrainingPlan, trainingIdentity, trainingLibrary, trainingTags,
   type TrainingSettings, type TrainingTask } from './lifeTraining';
 
 const source = (name: string): TrainingTask => ({ id: name, name, title: `${name}-运动💪🏻是生活的第一个锚点🪝`, notes: '原有跟练', links: [{ title: '跟练', url: 'https://example.com/workout' }], schedule: '每周三', dates: [] });
@@ -8,6 +8,33 @@ const settings: TrainingSettings = { revision: '', projects: [{ key: '爬坡', n
 const roll = (tasks: TrainingTask[], entries = {}) => rollingTrainingPlan(2026, 10, '2026-10-05', { year: 2026, tasks, connected: false, syncedAt: null }, DEFAULT_CYCLE, [], entries);
 
 describe('可复用训练项目', () => {
+  it('忽略项目的时长括号，合并爬坡并保留待办内容、旧标识及完成历史', () => {
+    const remote = source('爬坡 (45m)');
+    const library = trainingLibrary([remote, source('爬坡（1.5h）')]);
+    expect(library.filter(task => task.name === '爬坡')).toHaveLength(1);
+    expect(library.find(task => task.name === '爬坡')).toMatchObject({ rotation: true, notes: '原有跟练', links: remote.links });
+    for (const project of ['爬坡', '爬坡（45m）', '爬坡45m', '爬坡15h']) {
+      expect(recordedTrainingProjects({ plan: '', projects: [project], completed: true, effort: 'normal' }, library)).toEqual(['爬坡']);
+    }
+    const result = rollingTrainingPlan(2026, 10, '2026-10-05', { year: 2026, tasks: [remote], connected: false, syncedAt: null,
+      completions: [{ project: '爬坡45m', date: '2026-10-04' }] }, DEFAULT_CYCLE, [], {});
+    expect(result.coverage).toEqual([expect.objectContaining({ lastCompleted: '2026-10-04' })]);
+    const custom = trainingLibrary([remote], { revision: '', projects: [{ key: 'legacy-climb', name: '爬坡（45m）', notes: '保留', rotation: false }] });
+    expect(custom.filter(task => task.name === '爬坡')).toHaveLength(1);
+    expect(recordedTrainingProjects({ plan: '爬坡 (45m)', completed: true, effort: 'normal' }, custom)).toEqual(['legacy-climb']);
+    expect(() => parseTrainingSettings({ ...settings, projects: [...settings.projects,
+      { ...settings.projects[0], key: 'duplicate', name: '爬坡（45m）' }] })).toThrow('不能重复');
+  });
+  it('完成选择只读取实际记录，计划不预选，日历来源不写入手动完成', () => {
+    const library = trainingLibrary([source('HIIT'), source('游泳')]);
+    const planned = automaticTraining('2026-10-05', library, DEFAULT_CYCLE, []);
+    expect(completedTrainingRecord('2026-10-05', library, planned).projects).toEqual([]);
+    const calendar = [{ project: '爬坡 (45m)', date: '2026-10-05' }, { project: 'HIIT', date: '2026-10-04' }];
+    const manual = { plan: '游泳', projects: ['游泳'], effort: 'normal' as const, completed: true };
+    expect(completedTrainingRecord('2026-10-05', library, manual, calendar).projects).toEqual(['游泳', '爬坡']);
+    expect(completedTrainingRecord('2026-10-05', library, manual)).toMatchObject({ projects: ['游泳'], completed: true });
+    expect(completedTrainingRecord('2026-10-05', library)).toMatchObject({ projects: [], completed: false, mode: 'auto' });
+  });
   it('TickTick 改名为燃脂操后绑定同名自建项目，保留原记录标识且不重复排课', () => {
     const project = { key: 'custom-cardio', name: '燃脂操', notes: '30 分钟', rotation: true, tags: ['有氧'] as const };
     const configured = { revision: '', projects: [{ ...project, tags: [...project.tags] }] };

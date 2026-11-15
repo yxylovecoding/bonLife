@@ -105,6 +105,10 @@
 .life-fields input, .life-field input, .life-field textarea, .life-field select { color: var(--life-ink); }
 .life-field select { background: #fdfdfb; border: 1px solid var(--life-line); border-radius: 8px; padding: 10px; }
 .life-training-editor textarea { min-height: 84px; }
+.life-training-add { display: flex; align-items: end; gap: 12px; }
+.life-training-add .life-field { flex: 1; min-width: 0; margin: 0; }
+.life-training-add-actions { display: flex; gap: 8px; padding-bottom: 10px; }
+.life-training-editor .life-skin-choices button:disabled { opacity: 1; cursor: default; }
 .life-symptom-editor textarea { min-height: 80px; }
 .life-training-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 20px 0; border-top: 1px solid var(--life-line); }
 .life-training-heading h2 { margin: 0; font-size: 21px; font-weight: 500; }
