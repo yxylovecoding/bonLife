@@ -14,7 +14,7 @@ export default function LifeWellCalendar({ year, month, now, data, skinEntries, 
   const days = useMemo(() => new Map(data ? cells.flatMap(date => date ? [[date,
     wellCalendarDay(date, now, data.entries, skinEntries, data.skinSettings ?? DEFAULT_SKIN_SETTINGS)] as const] : []) : []), [cells, data, now, skinEntries]);
   const strips = useMemo(() => calendarStripSegments(cells, new Map([...days].map(([date, day]) => [date, day.strips]))), [cells, days]);
-  return <section className="life-calendar life-symptom-calendar life-well-calendar" aria-label={`${year}年${month}月bonWell日历`} aria-busy={loading}>
+  return <section className="life-calendar life-symptom-calendar life-well-calendar" aria-label={`${year}年${month}月BonWell日历`} aria-busy={loading}>
     <div className="life-weekdays">{['一', '二', '三', '四', '五', '六', '日'].map(day => <span key={day}>{day}</span>)}</div>
     <div className="life-days">{cells.map((date, index) => {
       if (!date) return <div className="life-empty-day" key={`empty-${index}`} aria-hidden="true" />;
@@ -25,7 +25,7 @@ export default function LifeWellCalendar({ year, month, now, data, skinEntries, 
       const summary = [makeup, ...(day?.summaries ?? []).map(item => `${item.label}：${item.text}`)].filter(Boolean).join('；');
       return <button type="button" key={date} disabled={loading || !data || Boolean(error)} onClick={() => onEdit(date)}
         className={`life-day${phase ? ` phase-${phase.phase}` : ''}${date === now ? ' is-today' : ''}`}
-        aria-label={`${date} bonWell ${phaseLabel}${day?.suggested ? ' 个人方案' : ''}：${summary || '未记录'}`}>
+        aria-label={`${date} BonWell ${phaseLabel}${day?.suggested ? ' 个人方案' : ''}：${summary || '未记录'}`}>
         <span className="life-day-heading"><span className="life-day-number">{Number(date.slice(-2))}</span>
           {phaseLabel && <span className={`life-period-mark phase-${phase?.phase}`} aria-hidden="true">{phaseLabel}</span>}</span>
         <span className="life-day-content">

@@ -90,7 +90,7 @@ export default function LifeWellEditor({ date, initial, owner, section, skinSett
     onPointerDown={event => { backdrop.current = event.button === 0 && outside(event); }} onPointerCancel={() => { backdrop.current = false; }}
     onClick={event => { const close = backdrop.current && outside(event); backdrop.current = false; if (close) dismiss(); }}>
     <form className="persistent-form" onSubmit={event => { event.preventDefault(); void save(); }}>
-      <div className="life-editor-heading"><h2 id="well-editor-title">bonWell <span>{date.replace(/-/g, '.')}</span></h2></div>
+      <div className="life-editor-heading"><h2 id="well-editor-title">BonWell <span>{date.replace(/-/g, '.')}</span></h2></div>
       <div className="persistent-form-body">
         <LifeMakeupFields value={draft.makeup} busy={busy} onChange={makeup => change({ ...draft, makeup, makeupChanged: true })} />
         {WELL_KINDS.map(kind => <section className="life-well-section" key={kind} aria-labelledby={`well-section-${kind}`}>

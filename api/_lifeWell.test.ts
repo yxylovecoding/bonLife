@@ -17,7 +17,7 @@ async function save(entries: WellEdit['entries'], mutationId = id, makeup?: Well
   return kv.eval<string[], [number, WellDay]>(SAVE_WELL, [`${owner}:life`, `${owner}:symptoms`, `${owner}:receipt:${mutationId}`],
     [date, mutationId, payload, createHash('sha256').update(payload).digest('hex')]);
 }
-describe('bonWell 原子保存', () => {
+describe('BonWell 原子保存', () => {
   it('多类和共享字段一起保存并回读，症状索引同步，不触及其他日或身体数据', async () => {
     await kv.hset('bon:life', { 'body:2026-11-13': { text: '', revision: 'body', body: { weight: 50 } }, 'mood:2026-11-12': { text: '昨天', revision: 'old' } });
     const entries = { skin: { text: '护理', revision: '', skin: { status: 'healthy' as const } }, eyes: { text: '眼', revision: '', eyes: { symptoms: {} } },

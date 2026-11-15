@@ -7,7 +7,7 @@ const date = '2026-11-13';
 const day = () => wellDay({}, date);
 beforeEach(() => localStorage.clear());
 
-describe('bonWell 草稿与提交', () => {
+describe('BonWell 草稿与提交', () => {
   it('只提交修改的分类，不把未编辑的肤况或化妆写入', () => {
     const draft = createWellDraft('bon', date, day());
     draft.entries.skin.skin = { status: 'acne', planDay: 2 };

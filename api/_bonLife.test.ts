@@ -45,7 +45,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
-describe('bonWell 接口', () => {
+describe('BonWell 接口', () => {
   it('批量保存返回四类最新内容，所有键通过同一事务写入', async () => {
     const current = wellDay({}, '2026-11-13');
     current.entries.mood = { text: '开心', revision: 'well-api-12345678' };
