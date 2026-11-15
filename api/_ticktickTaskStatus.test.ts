@@ -27,7 +27,8 @@ describe('任务日期只读核对', () => {
   });
   it('区分列表和详情日期，保留子任务身份，不泄露备注且不写入', async () => {
     const api = fixture();
-    const result = await inspectTickTickTaskDate(api as unknown as TickTickApi, 'transformer', {}, now);
+    const result = await inspectTickTickTaskDate(api as unknown as TickTickApi, 'transformer',
+      { workingMap: { '2026-11-08': true }, locationTags: ['班'] }, now);
     expect(result.tasks).toHaveLength(1);
     expect(result.tasks[0]).toMatchObject({ snapshot: { parentId: 'parent', dueDate: task.dueDate },
       current: { dueDate: '2026-11-08T00:00:00+0800' }, alwaysToday: true, completedToday: false, abandonedToday: false,

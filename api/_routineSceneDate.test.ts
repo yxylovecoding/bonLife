@@ -47,10 +47,10 @@ describe('候选日场景资格', () => {
     expect(withRulePolicy(config, check)).toBe(true);
     expect(withRulePolicy(defaultRuleConfig(), check)).toBe(false);
   });
-  it('分类只读取地点目录内的场景，不把目录外寓作为居的别名', () => {
+  it('分类只读取日子目录内的五种场景，寓仅在旧适配器中作为居的别名', () => {
     expect(routineScenes(task(['寄', '居', '寓', '旅']), { locationTags: ['寄', '旅'] })).toEqual(['home', 'travel']);
     expect(routineScenes(task(['寓']), { locationTags: ['居'] })).toEqual([]);
-    expect(routineScenes(task(['寓']), { locationTags: ['寓'] })).toEqual(['school']);
+    expect(routineScenes(task(['寓']), { locationTags: ['寓'] })).toEqual([]);
     expect(routineScenes(task(['居']), { locationTags: [] })).toEqual([]);
     expect(routineScenes(task(['寓']))).toEqual(['school']);
   });

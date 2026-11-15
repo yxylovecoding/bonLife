@@ -4,6 +4,17 @@ import { readTickTickLocationTags } from './_ticktickLocationTags';
 
 const api = (value: unknown) => ({ listTags: vi.fn(async () => value) }) as unknown as TickTickApi;
 
+it('日子目录按真实层级读取五种场景与任意城市，优先于旧地点目录', async () => {
+  const members = ['旅', '居', '寄', '广州', '常州', '北京', '休', '班', '新城市'];
+  expect(await readTickTickLocationTags(api([
+    { name: '日子' }, ...members.map(name => ({ name, parent: '日子' })),
+    { name: '地点' }, { name: '旧城市', parent: '地点' }, { name: 'routine' },
+  ]))).toEqual(members);
+  expect(await readTickTickLocationTags(api([
+    { name: 'DAYS', label: ' 日子 ' }, { name: '常州', parent: 'days' },
+  ]))).toEqual(['常州']);
+});
+
 it('读取地点的全部后代，仅返回规范 name，排除父标签与其他目录', async () => {
   const tags = [
     { name: '北京', label: '北京', parent: '地点' },
@@ -41,6 +52,7 @@ it.each([
   [{ name: '地点' }, { name: '北京', parent: 'missing' }],
   [{ name: '地点' }, { name: '北京', parent: '地点' }, { name: ' 北京 ', parent: '地点' }],
   [{ name: '地点' }, { name: 'places', label: '地点' }],
+  [{ name: '日子' }, { name: 'days', label: '日子' }],
   [{ name: '地点', parent: '地点' }],
   [{ name: '地点' }, { name: 'a', parent: 'b' }, { name: 'b', parent: 'a' }],
 ])('目录无效、存在歧义或父关系不完整时拒绝：%j', async value => {

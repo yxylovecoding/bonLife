@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BEIJING, DEFAULT_INTERNSHIP_RULES, GUANGZHOU, resolveCalendarState } from '../src/utils/internship';
-import { nextTaskLocationDate, taskLocationAllowed, taskLocationUnavailable } from './_ticktickLocation';
+import { nextTaskLocationDate, taskCityTags, taskLocationAllowed, taskLocationUnavailable, taskSceneTags } from './_ticktickLocation';
 import { LOCATION_HIDDEN_KEY, syncTickTickLocationVisibility } from './_ticktickLocationVisibility';
 import { planTickTickDay } from './_ticktickDailyPlan';
 import { exerciseTarget } from './_ticktickExercise';
@@ -48,9 +48,9 @@ describe('地点匹配与日期规则分离', () => {
   const workCalendar = (calendar: Record<string, unknown> = {}) => ({ ...resolveCalendarState({ config: { schoolCity: BEIJING,
     internshipPeriods: [{ id: 'work', profileId: 'p', profileName: '公司', revision: 1,
       startDate: '2026-11-13', endDate: '2026-11-18', city: GUANGZHOU, schoolCity: BEIJING,
-      rules: { ...DEFAULT_INTERNSHIP_RULES, salary: 100 } }] } }, calendar), locationTags: ['广州', '北京', '寄', '居', '旅'] });
-  it('班是独立工休条件，休息日不能被居或城市匹配放行，不继承父任务标签', () => {
-    const state = workCalendar(), work = task('work', { tags: ['always-today', '班', '广州', '居'] });
+      rules: { ...DEFAULT_INTERNSHIP_RULES, salary: 100 } }] } }, calendar), locationTags: ['广州', '北京', '寄', '居', '旅', '休', '班'] });
+  it('班对应工作日，城市与场景取交集，不继承父任务标签', () => {
+    const state = workCalendar(), work = task('work', { tags: ['always-today', '班', '广州'] });
     expect(state.tagMap['2026-11-14']).toBe('intern');
     expect(state.workingMap['2026-11-14']).toBe(false);
     expect(taskLocationAllowed(work, state, '2026-11-14')).toBe(false);
@@ -58,6 +58,60 @@ describe('地点匹配与日期规则分离', () => {
     expect(taskLocationAllowed({ ...work, tags: ['班', '北京'] }, state, '2026-11-16')).toBe(false);
     expect(taskLocationAllowed({ ...work, tags: ['班'] }, state, '2026-11-14')).toBe(false);
     expect(taskLocationAllowed({ ...work, tags: ['广州', '居'], parentId: 'work' }, state, '2026-11-14')).toBe(true);
+  });
+  it('旅居寄休班以外的日子子标签全部是城市，父标签与目录外班不限制', () => {
+    const state = { ...workCalendar(), locationTags: ['旅', '居', '寄', '休', '班', '常州', '寓'] };
+    const candidate = task('all', { tags: [...state.locationTags, '日子', 'routine'] });
+    expect(taskSceneTags(candidate, state)).toEqual(['旅', '居', '寄', '休', '班']);
+    expect(taskCityTags(candidate, state)).toEqual(['常州', '寓']);
+    expect(taskLocationAllowed(task('parent', { tags: ['日子'] }), state, today)).toBe(true);
+    expect(taskLocationAllowed(task('outside', { tags: ['班'] }), { ...state, locationTags: [] }, today)).toBe(true);
+  });
+  it('休仅对应 boncal 的休，休班及其他场景取并集后与城市取交集', () => {
+    const state = workCalendar({ tagMap: { '2026-11-18': 'home', '2026-11-19': 'travel', '2026-11-20': 'school' } });
+    const rest = task('rest', { tags: ['休', '广州'] });
+    expect(state.livingKindMap['2026-11-14']).toBe('rest');
+    expect(taskLocationAllowed(rest, state, '2026-11-14')).toBe(true);
+    expect(taskLocationAllowed(rest, state, '2026-11-16')).toBe(false);
+    expect(['2026-11-18', '2026-11-19', '2026-11-20'].map(date =>
+      taskLocationAllowed({ ...rest, tags: ['休'] }, state, date))).toEqual([false, false, false]);
+    for (const tags of [['休', '班', '广州'], ['居', '班', '广州']]) {
+      expect(['2026-11-14', '2026-11-16'].map(date => taskLocationAllowed({ ...rest, tags }, state, date))).toEqual([true, true]);
+      expect(taskLocationAllowed({ ...rest, tags: [...tags.filter(tag => tag !== '广州'), '北京'] }, state, '2026-11-14')).toBe(false);
+    }
+    expect(taskLocationAllowed({ ...rest, tags: ['寄', '班'] }, state, '2026-11-18')).toBe(true);
+  });
+  it('休沿用 boncal 的调休和出勤覆盖，工休未知保留日期，已知其他场景仍可匹配', () => {
+    const state = workCalendar({ holidayDataByYear: { 2026: { '2026-11-14': { isOffDay: false }, '2026-11-16': { isOffDay: true } } },
+      dayOverrides: { '2026-11-15': { attendance: 'work' }, '2026-11-17': { attendance: 'rest' } } });
+    const rest = task('rest', { tags: ['休'] });
+    expect(['2026-11-14', '2026-11-15', '2026-11-16', '2026-11-17'].map(date => taskLocationAllowed(rest, state, date)))
+      .toEqual([false, false, true, true]);
+    const unknown = { ...state, livingKindMap: { ...state.livingKindMap, '2026-11-14': undefined } };
+    expect(taskLocationUnavailable(rest, unknown, '2026-11-14')).toBe(true);
+    expect(nextTaskLocationDate(rest, unknown, '2026-11-14')).toBeNull();
+    expect(taskLocationAllowed({ ...rest, tags: ['休', '居'] }, unknown, '2026-11-14')).toBe(true);
+    expect(taskLocationUnavailable({ ...rest, tags: ['休', '居'] }, unknown, '2026-11-14')).toBe(false);
+  });
+  it('普通轮换按休班并集挑选，固定今日休任务顺延，显隐遵守休场景及具体时刻', async () => {
+    const state = workCalendar(), workday = '2026-11-13', restday = '2026-11-14';
+    const plan = planTickTickDay({ tasks: [task('either', { tags: ['休', '班', '广州'], priority: 3, dueDate: `${restday}T00:00:00+0800` })],
+      today: restday, now: new Date(`${restday}T10:00:00+08:00`), calendarState: state,
+      state: { connectionId: 'test', history: [], deadlines: {} }, budgetMinutes: 240 });
+    expect(plan.dates.get('either')).toBe(restday);
+    const original = task('rest', { tags: ['休', '广州', 'always-today', 'routine'], isAllDay: false,
+      startDate: `${workday}T10:00:00+0800`, dueDate: `${workday}T10:30:00+0800`,
+      priority: 3, reminders: ['TRIGGER:-PT0S'], repeatFlag: 'RRULE:FREQ=DAILY' });
+    const f = fixture([original]);
+    await syncTickTickAlwaysToday(f.api, { calendarState: state, today: workday });
+    const expected = { ...original, startDate: `${restday}T10:00:00+0800`, dueDate: `${restday}T10:30:00+0800` };
+    expect(f.stored.get('rest')).toEqual(expected);
+    for (const datetime of [`${workday}T18:00`, `${restday}T09:00`]) {
+      await syncTickTickLocationVisibility(f.api, { calendarState: state, now: new Date(`${datetime}:00+08:00`) });
+      expect(f.stored.get('rest')).toEqual({ ...expected, tags: [...original.tags!, 'hidden'] });
+    }
+    await syncTickTickLocationVisibility(f.api, { calendarState: state, now: new Date(`${restday}T10:01:00+08:00`) });
+    expect(f.stored.get('rest')).toEqual(expected);
   });
   it('班沿用 boncal 调休及手动出勤，不以周一到周五或 intern 标签替代', () => {
     const work = task('work', { tags: ['班'] });

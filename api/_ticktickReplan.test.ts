@@ -66,16 +66,17 @@ describe('日历故障隔离与恢复', () => {
     await runRuleReplan({ scope: 'hourly' });
     expect(m.tasks).toEqual(originals); expect(m.write).not.toHaveBeenCalled();
   });
-  it.each(['full', 'hourly', 'visibility'] as const)('%s 沿用 boncal 休息日阻止班任务显示，固定今日不能覆盖工休', async scope => {
-    const rest = '2026-11-14', next = '2026-11-16';
+  it.each((['full', 'hourly', 'visibility'] as const).flatMap(scope => ['班', '休'].map(sceneTag => ({ scope, sceneTag }))))(
+    '$scope 沿用日子目录和 boncal $sceneTag 场景，固定今日不能覆盖工休', async ({ scope, sceneTag }) => {
+    const rest = sceneTag === '班' ? '2026-11-14' : '2026-11-13', next = sceneTag === '班' ? '2026-11-16' : '2026-11-14';
     vi.setSystemTime(new Date(`${rest}T18:00:00+08:00`)); m.realLocations = true;
-    // The work tag belongs to 课, outside the location subtree.
-    m.tagsRead.mockResolvedValue([{ name: '地点' }, { name: '课' }, { name: '广州', parent: '地点' }, { name: '班', parent: '课' }]);
+    m.tagsRead.mockResolvedValue([{ name: '日子' }, ...['旅', '居', '寄', '广州', '常州', '北京', '休', '班']
+      .map(name => ({ name, parent: '日子' }))]);
     m.data.set('app-config', { config: { schoolCity: BEIJING, internshipPeriods: [{ id: 'work', profileId: 'p', profileName: '公司', revision: 1,
       startDate: rest, endDate: '2026-11-17', city: GUANGZHOU, schoolCity: BEIJING, rules: { ...DEFAULT_INTERNSHIP_RULES, salary: 100 } }] } });
-    m.data.set('calendar-tags', { dayOverrides: { [next]: { attendance: 'work' } } });
+    m.data.set('calendar-tags', { dayOverrides: { [next]: { attendance: sceneTag === '班' ? 'work' : 'rest' } } });
     config(['visibility-timed', 'always-today', 'visibility-location']);
-    m.tasks = [task('work', { title: '考勤签到', tags: ['always-today', '当天', '班', '广州', 'routine'], priority: 5,
+    m.tasks = [task('work', { title: '场景待办', tags: ['always-today', '当天', sceneTag, '广州', 'routine'], priority: 5,
       isAllDay: false, startDate: `${rest}T10:00:00+0800`, dueDate: `${rest}T10:00:00+0800`,
       reminders: ['TRIGGER:-PT0S'], repeatFlag: 'RRULE:FREQ=DAILY;INTERVAL=1' })];
     const original = structuredClone(m.tasks[0]);

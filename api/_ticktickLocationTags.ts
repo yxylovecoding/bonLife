@@ -13,7 +13,7 @@ export async function readTickTickLocationTags(api: TickTickApi): Promise<string
     const raw: unknown = await listTags.call(api);
     if (!Array.isArray(raw)) throw failure();
     const parents = new Map<string, string>();
-    const roots: string[] = [];
+    const roots: string[] = [], legacyRoots: string[] = [];
     for (const item of raw) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) throw failure();
       const tag = item as Record<string, unknown>;
@@ -23,8 +23,12 @@ export async function readTickTickLocationTags(api: TickTickApi): Promise<string
       const name = normalize(tag.name), parent = typeof tag.parent === 'string' ? normalize(tag.parent) : '';
       if (parents.has(name)) throw failure();
       parents.set(name, parent);
-      if (name === '地点' || typeof tag.label === 'string' && normalize(tag.label) === '地点') roots.push(name);
+      const label = typeof tag.label === 'string' ? normalize(tag.label) : '';
+      if (name === '日子' || label === '日子') roots.push(name);
+      if (name === '地点' || label === '地点') legacyRoots.push(name);
     }
+    // The renamed directory is authoritative; never merge an old parallel group.
+    if (!roots.length) roots.push(...legacyRoots);
     if (roots.length > 1) throw failure();
     for (const parent of parents.values()) if (parent && !parents.has(parent)) throw failure();
     // Validate all chains iteratively, including unrelated branches. A partial

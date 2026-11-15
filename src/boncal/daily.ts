@@ -124,9 +124,10 @@ export function resolveCalendarState(configState: unknown, calendarState: unknow
     .map(date => resolveDailyContext(date, tagMap[date], { config, dayOverrides, holidayDataByYear }));
   const cityMap = Object.fromEntries(days.map(day => [day.date, day.city]));
   const workingMap = Object.fromEntries(days.map(day => [day.date, day.working]));
+  const livingKindMap = Object.fromEntries(days.map(day => [day.date, day.livingKind]));
   const locationCities = [BEIJING, GUANGZHOU, config.schoolCity, config.homeCity, config.internshipLegacyCity,
     ...(config.schoolPeriods ?? []).map(p => p.city),
     ...(config.internshipPeriods ?? []).flatMap(p => [p.city, p.schoolCity]), ...Object.values(cityMap)]
     .map(readSceneCity).filter((city): city is SceneCity => city !== null);
-  return { ...calendar, tagMap, cityMap, workingMap, locationCities };
+  return { ...calendar, tagMap, cityMap, workingMap, livingKindMap, locationCities };
 }

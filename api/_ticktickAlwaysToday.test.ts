@@ -160,9 +160,10 @@ describe('always-today 截止日期', () => {
     const original = makeTask('reopened', { title: 'transformer', parentId: 'parent', tags: ['always-today', '班'],
       completedTime: '2026-09-17T04:14:43.000+0000', content: '(1.5h)', priority: 3 });
     const f = fixture([original]);
-    expect(await syncTickTickAlwaysToday(f.api)).toEqual({ matched: 1, updated: 1 });
+    const options = { calendarState: { workingMap: { [day]: true }, locationTags: ['班'] } };
+    expect(await syncTickTickAlwaysToday(f.api, options)).toEqual({ matched: 1, updated: 1 });
     expect(f.saved.get(original.id)).toEqual({ ...original, dueDate: `${day}T00:00:00+0800` });
-    expect(await syncTickTickAlwaysToday(f.api)).toEqual({ matched: 1, updated: 0 });
+    expect(await syncTickTickAlwaysToday(f.api, options)).toEqual({ matched: 1, updated: 0 });
   });
 
   it('残留完成时间的未完成系列仍遵守当天完成保护', async () => {
