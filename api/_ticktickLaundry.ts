@@ -67,9 +67,22 @@ export async function readLaundryForecast(location: SceneCity, today: string, no
 
 function lastCompletion(task: TickTickTask, tasks: TickTickTask[], history: TickTickTask[], now: Date) {
   const family = routineOccurrenceKey(task);
-  const unique = tasks.filter(candidate => pending(candidate) && routineOccurrenceKey(candidate) === family).length === 1;
+  const candidates = tasks.filter(candidate => pending(candidate) && routineOccurrenceKey(candidate) === family);
+  const created = (record: TickTickTask) => Date.parse(record.createdTime ?? '');
+  const origin = created(task);
+  // Recurring occurrences get new IDs but keep the series creation time.
+  // Distinguish separately created, same-named laundry tasks without using
+  // mutable tags, due dates or recurrence intervals as identity.
+  const sameSeries = (record: TickTickTask) => {
+    if (routineOccurrenceKey(record) !== family) return false;
+    if (Number.isFinite(origin) && Number.isFinite(created(record))) {
+      return created(record) === origin && candidates.every(candidate => Number.isFinite(created(candidate)))
+        && candidates.filter(candidate => created(candidate) === origin).length === 1;
+    }
+    return candidates.length === 1;
+  };
   return history.filter(record => record.projectId === task.projectId && (record.id === task.id
-    || (unique && routineOccurrenceKey(record) === family)) && record.completedTime
+    || sameSeries(record)) && (record.status ?? 2) === 2 && record.completedTime
     && Number.isFinite(Date.parse(record.completedTime)) && Date.parse(record.completedTime) <= now.getTime())
     .map(record => record.completedTime!).sort((a, b) => Date.parse(b) - Date.parse(a))[0];
 }
@@ -192,7 +205,7 @@ function laundryNote(task: TickTickTask, anchor: Anchor, date: string, options: 
   };
   const tags = (task.tags ?? []).filter(tag => ['寄', '居', '寓', '旅'].includes(normalize(tag)));
   return ['【洗衣安排原因】',
-    `周期：${interval ? `每 ${interval} 天；` : ''}${completion ? `最近实际完成 ${completion}` : '缺少实际完成记录，沿用原周期锚点'}；周期目标 ${anchor.target}，安排 ${date}。`,
+    `周期：${interval ? `每 ${interval} 天；` : ''}${completion ? `最近实际完成 ${completion}` : '尚未关联可确认的完成记录，沿用原周期锚点'}；周期目标 ${anchor.target}，安排 ${date}。`,
     `天气：${weather(date)}；${weather(addDays(date, 1))}。`,
     `场景：${tags.length ? `任务标签 ${tags.join('／')}；` : ''}当日所在地 ${location?.name ?? '城市未知'}。`,
     `安排依据：${reason}。`, '【洗衣安排原因结束】'].join('\n');

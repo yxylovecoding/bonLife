@@ -105,10 +105,11 @@ export async function refreshDailyHistory(api: TickTickApi, tasks: TickTickTask[
       throw new Error('TickTick 完成记录无效，未调整每日安排');
     }
     if (Date.parse(task.completedTime) > now.getTime()) continue;
-    const { id, projectId, parentId, title, content, desc, completedTime, priority, tags, isAllDay, startDate, dueDate, repeatFlag, repeatFrom, timeZone, reminders } = task;
+    const { id, projectId, parentId, title, content, desc, createdTime, completedTime, priority, tags, isAllDay, startDate, dueDate, repeatFlag, repeatFrom, timeZone, reminders } = task;
     const key = JSON.stringify([projectId, id, completedTime]), previous = records.get(key);
     const source = sourceById.get(identity(task)) ?? sourceByFamily.get(routineOccurrenceKey(task));
     records.set(key, { id, projectId, parentId, title, content: content ?? previous?.content, desc: desc ?? previous?.desc,
+      createdTime: createdTime ?? previous?.createdTime,
       completedTime, priority: priority ?? previous?.priority ?? source?.priority, tags: tags ?? previous?.tags ?? source?.tags,
       isAllDay: isAllDay ?? previous?.isAllDay, startDate: startDate ?? previous?.startDate, dueDate: dueDate ?? previous?.dueDate, status: 2,
       repeatFlag: repeatFlag ?? previous?.repeatFlag ?? source?.repeatFlag, repeatFrom: repeatFrom ?? previous?.repeatFrom ?? source?.repeatFrom,

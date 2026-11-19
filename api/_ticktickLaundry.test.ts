@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chooseLaundryDay, isLaundryTask, laundryAnchor, laundryBeforeTrip, laundryLocation, readLaundryForecast, syncLaundrySchedule,
   LAUNDRY_STATE_KEY, type LaundryForecast, type LaundryState, type LaundryWeather } from './_ticktickLaundry';
 import { buildTripSourcesFromSyncState, type TickTickApi, type TickTickTask } from './_ticktickTrips';
+import { refreshDailyHistory, type DailyPlanState } from './_ticktickDailyPlan';
 import { BEIJING, GUANGZHOU } from '../src/utils/internship';
 const { data, upstream } = vi.hoisted(() => ({ data: new Map<string, any>(), upstream: vi.fn() }));
 vi.mock('@vercel/kv', () => ({ kv: { get: async (key: string) => structuredClone(data.get(key) ?? null),
@@ -196,6 +197,43 @@ describe('天气与日程选日', () => {
 });
 
 describe('洗衣同步与天气故障', () => {
+  it('同清单同名的京广两条洗衣按创建时间关联完成，周期变更后也刷新备注', async () => {
+    const current = task({ id: 'guangzhou', createdTime: '2026-10-05T02:51:38+0800',
+      tags: ['当天', '广州'], repeatFlag: 'RRULE:FREQ=WEEKLY;WKST=MO;INTERVAL=1',
+      startDate: '2026-11-19T08:00:00+0800', dueDate: '2026-11-19T08:00:00+0800' });
+    const other = task({ id: 'beijing', createdTime: '2026-11-11T22:40:57+0800', tags: ['北京', 'hidden', '当天'],
+      startDate: '2027-02-12T08:00:00+0800', dueDate: '2027-02-12T08:00:00+0800' });
+    const records = [{ ...current, id: 'completed-new-id', status: 2, repeatFlag: '', tags: ['hidden', '当天', '广州'],
+      createdTime: '2026-10-04T18:51:38Z', completedTime: '2026-11-18T23:04:15+0800' }];
+    const at = new Date('2026-11-19T10:00:00+0800'), c = client(current);
+    const daily: DailyPlanState = { connectionId: 'connection', history: [], deadlines: {} };
+    const api = { ...c.api, listCompletedTasks: vi.fn().mockResolvedValue(records) };
+    await refreshDailyHistory(api, [current, other], daily, at);
+    expect(laundryAnchor(current, [current, other], daily.history, state(), at)).toMatchObject({
+      completion: records[0].completedTime, target: '2026-11-25' });
+    expect(laundryAnchor(other, [current, other], daily.history, state(), at)?.completion).toBeUndefined();
+    const o = options({ tasks: [current, other], history: daily.history, now: at, today: '2026-11-19',
+      configState: { config: { schoolCity: GUANGZHOU } },
+      calendarState: { locationTags: ['广州', '北京'], tagMap: { '2026-11-19': 'school' } },
+      trips: [{ key: 'trip', name: '出行', note: '', dates: [], startDate: '2026-11-20', endDate: '2026-11-30' }] });
+    await syncLaundrySchedule(api, { ...o, connectionId: 'connection', mode: 'travel' });
+    expect(c.current().content).toContain('最近实际完成 2026-11-18');
+    expect(c.current().content).toContain('周期目标 2026-11-25');
+    expect(c.current().repeatFlag).toBe(current.repeatFlag);
+    expect(c.current().tags).toEqual(current.tags);
+  });
+  it('创建时间缺失、冲突或同来源多条时不猜测完成归属', () => {
+    const current = task({ createdTime: '2026-10-01T00:00:00Z' });
+    const record = { ...history[0], createdTime: current.createdTime };
+    for (const other of [task({ id: 'other' }), task({ id: 'other', createdTime: current.createdTime })]) {
+      const missing = { ...record, createdTime: undefined };
+      expect(laundryAnchor(current, [current, other], [missing], state(), now)?.completion).toBeUndefined();
+    }
+    expect(laundryAnchor(current, [current, { ...current, id: 'copy' }], [record], state(), now)?.completion).toBeUndefined();
+    expect(laundryAnchor(current, [current, task({ id: 'unknown' })], [record], state(), now)?.completion).toBeUndefined();
+    expect(laundryAnchor(current, [current], [{ ...record, createdTime: '2026-09-01T00:00:00Z' }], state(), now)?.completion).toBeUndefined();
+    expect(laundryAnchor(current, [current], [{ ...record, status: -1 }], state(), now)?.completion).toBeUndefined();
+  });
   it.each(['2026-10-05T16:00:00+08:00', '2026-10-10T17:00:00+08:00'])(
     '同日手动改时保留日期，不被天气或原时段冲突重新排走（%s）', async currentTime => {
       const c = client();
