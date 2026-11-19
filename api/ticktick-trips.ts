@@ -146,7 +146,7 @@ async function status() {
 
 async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Cache-Control', 'private, no-store');
-  const isCron = req.method === 'GET' && (cronAuthOk(req) || cloudSchedulerAuthOk(req));
+  const isCron = (req.method === 'GET' && cronAuthOk(req)) || cloudSchedulerAuthOk(req);
   if (isCron) authorizeAccountScope('legacy');
   if (isCron && req.query?.scheduler === '1') {
     const json = res.json.bind(res);
@@ -236,6 +236,17 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     }
     if (req.query?.action === 'daily-email') return res.status(410).json({ error: '每日邮件已取消' });
     if (isCron && automaticRestWindow()) return res.status(200).json({ ok: true, skipped: 'rest-window' });
+    if (req.query?.action === 'orche-failure-task') {
+      if (!isCron || req.method !== 'POST') return res.status(403).json({ error: 'scheduler authorization required' });
+      try {
+        const { deliverOrcheFailureTask } = await import('./_orcheFailureTask.js');
+        const result = await deliverOrcheFailureTask();
+        return res.status(result.ok ? 200 : 503).json(result);
+      } catch {
+        console.warn('[orche-failure-task]', 'unconfirmed');
+        return res.status(503).json({ ok: false });
+      }
+    }
     // These scheduled actions only occur before full/hourly-replan in the
     // existing queue. That following action already evaluates every visibility
     // rule with fresh sources. Avoid a redundant prelude stopping independent

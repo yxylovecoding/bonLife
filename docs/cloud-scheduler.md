@@ -41,6 +41,7 @@ Worker 固定调用 Render 服务地址，不接受请求方提供目标 URL、�
 - `POST /dispatch`：同样鉴权，JSON `{ "kind": "full", "id": "<唯一请求ID>" }` 或 `kind=hourly`。相同 ID 去重，正在排队或执行的同类请求合并；不发邮件。
 - 一次 Durable Object alarm 至多执行一次有超时的业务 HTTP 调用，完成状态持久化后唤醒下一步。调用 Render 前先做一次最长 10 秒、无凭据的只读 `/healthz` 检查；仅收到 `200` 和 `ok: true` 才发业务请求。冷启动、502、加载页或就绪读取超时均由持久队列每 30 秒复查，最多 12 次；此时尚未发送业务请求，不会重复写待办。任务不会依赖 HTTP 客户端保持连接，也不依赖本地进程。
 - 排期阶段内的快速恢复仍有上限。Render 未就绪、已确认的临时读取故障、锁占用，以及应用确认可安全重新计算的部分完成，由同一持久任务继续补跑。间隔为 2、4、8、10 分钟，之后最多每 10 分钟一次。成功步骤已确认时直接保留；待补规则从最新来源重新计算。老任务超过 45 分钟、跨上海日期或进入凌晨休息窗口时结束，由原有下一轮定时任务重新读取当前安排。结果不明的写入不直接重发。
+- 完整／小时 Orche 失败或部分完成后，Worker 在独立队列步骤请 Render 在已连接的 TickTick 清单创建「Orche 排期未完成」。截止和开始为实际投递当天的北京时间全天日期，优先级 5，同一天最多一条。独立步骤暂停于 00:30–05:01；Render 或 TickTick 暂不可用时保留通知并退避重试，最多保留 24 小时。写入意图先持久化，结果不明时凭回读恢复确认。
 - 设备通知在 BonLog 的「Orchestrator → 开启失败通知」配置，只对所有者开放。手动任务每个失败轮次通知一次，自动任务同类失败 6 小时内合并，同类成功后可以再次提醒；凌晨正常跳过不发通知。Worker 持久化浏览器推送订阅和待发通知，直接向浏览器推送服务发送空通知，Render 中断时也能送出。通知正文由 BonLog 在本机生成，点击打开当前排期状态。iPhone／iPad 从添加到主屏幕的 BonLog 开启。
 - Outlook ICS 的临时网络、超时、429 或 500/502/503/504 响应在服务端只重试读取一次；fetch 连接超时后改用独立 IPv4 HTTPS 连接，沿用 Outlook 主机白名单、证书验证、4MB 上限及禁止重定向。每次最多 15 秒，不重放排程写入。两次均失败则保留旧数据并报告失败，不使用旧日程冒充本轮可用时段。
 - 连接超时、网络错误及上游 5xx 显示 Outlook 暂不可用，只有授权／订阅不存在或重定向才建议检查订阅链接；经期读取采用同样分类。遇到多日历同时连接失败，先核对[微软服务状态](https://status.cloud.microsoft/)（页面数据为 `/api/posts/mac` 与 `/api/posts/m365Consumer`），再分析网络；不能仅凭应用超时断言订阅失效或 Render 故障。2026-11-13 已核对微软覆盖 Outlook.com 的大范围服务降级，生产端在 DNS 正常、CPU 和内存未耗尽时仍无法完成 TCP/TLS 连接。微软未恢复期间不借用旧日历排新计划，原有云端任务继续按既定频率尝试。
@@ -54,7 +55,7 @@ Worker 固定调用 Render 服务地址，不接受请求方提供目标 URL、�
 
 官方说明：[Cron](https://developers.cloudflare.com/workers/configuration/cron-triggers/)、[Durable Objects 免费额度](https://developers.cloudflare.com/durable-objects/platform/pricing/)、[alarm 行为](https://developers.cloudflare.com/durable-objects/api/alarms/)。
 
-专用执行密钥只授权 `ticktick-trips` 的 `scheduler=1`、GET 和固定业务 action 白名单；不授权账本、照片、账号或月度备份接口。独立 `BACKUP_RUN_SECRET` 对应 Render 的原 `CRON_SECRET`，只用于每月 1 日北京时间 08:10 的备份接口；`MONTHLY_BACKUP_ENABLED=true`，原 Vercel Cron 必须保持关闭。
+专用执行密钥只授权 `ticktick-trips` 的 `scheduler=1` 固定动作，原有白名单使用 GET，创建失败通知仅接受固定 POST `orche-failure-task`；不授权账本、照片、账号或月度备份接口。独立 `BACKUP_RUN_SECRET` 对应 Render 的原 `CRON_SECRET`，只用于每月 1 日北京时间 08:10 的备份接口；`MONTHLY_BACKUP_ENABLED=true`，原 Vercel Cron 必须保持关闭。
 
 手动完整重排依次执行 `routine-visibility → life-periods → full`，涵盖所有现行 TickTick 专项处理；不发送邮件。每小时与完整同步均先对齐出门／搬家模板的 10 组二级子任务，保留容器前缀与各自排期。
 

@@ -8,6 +8,11 @@ const orche = job => ['full', 'hourly'].includes(job.kind);
 const due = job => job.inFlightUntil || job.nextAt || 0;
 const stale = (job, now) => now - job.scheduledAt > 45 * 60_000 || day(now) !== day(job.scheduledAt);
 const freshAttempt = () => ({ busy: 0, retries: 0, batches: 0, warmups: 0 });
+function taskAlertTime(alert, now) {
+  if (!alert) return Infinity;
+  const next = Math.max(now, alert.nextAt);
+  return automaticRestWindow(new Date(next)) ? Date.parse(`${day(next)}T05:01:00+08:00`) : next;
+}
 function nextJob({ jobs }) {
   // Preserve serial writes even when an alarm is restored after a restart.
   return jobs.find(job => pending(job) && job.inFlightUntil)
@@ -42,7 +47,7 @@ export class SchedulerQueue {
   async arm(state) {
     const job = nextJob(state);
     const alertAt = state.alerts?.reduce((next, alert) => Math.min(next, alert.nextAt), Infinity) ?? Infinity;
-    const next = Math.min(job ? due(job) : Infinity, alertAt);
+    const next = Math.min(job ? due(job) : Infinity, alertAt, taskAlertTime(state.taskAlert, Date.now()));
     if (Number.isFinite(next)) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1000, next));
     else await this.ctx.storage.deleteAlarm();
   }
@@ -98,6 +103,8 @@ export class SchedulerQueue {
   }
   async noteFailure(state, job, now) {
     if (!orche(job)) return;
+    if (state.lastTaskAlertDay !== day(now) && !state.taskAlert)
+      state.taskAlert = { createdAt: now, nextAt: now, attempts: 0 };
     const reason = `${job.kind}:${job.reason || 'rules-incomplete'}`;
     const notices = state.notices ||= {};
     if (!job.id.startsWith('manual-') && (notices[reason] || 0) > now) return;
@@ -127,6 +134,25 @@ export class SchedulerQueue {
       await this.arm(state);
     });
   }
+  async deliverTaskAlert(alert) {
+    const result = alert.attemptedAt - alert.createdAt < 86400_000
+      ? await callAction('orche-failure-task', this.env, { ...freshAttempt(), warmups: alert.attempts }) : null;
+    await this.change(async state => {
+      const now = Date.now();
+      if (result?.outcome === 'success') {
+        state.lastTaskAlertDay = day(alert.attemptedAt);
+        delete state.taskAlert;
+        console.info('[orche-failure-task]', 'confirmed');
+      } else if (now - alert.createdAt >= 86400_000) {
+        delete state.taskAlert;
+      } else {
+        const attempts = alert.attempts + 1;
+        state.taskAlert = { createdAt: alert.createdAt, attempts,
+          nextAt: now + 30_000 * Math.min(2 ** (attempts - 1), 30) };
+      }
+      await this.arm(state);
+    });
+  }
   async finish(state, job, now) {
     if (job.results.every(result => !['failed', 'partial'].includes(result.outcome))) {
       job.status = 'success'; job.finishedAt = now; delete job.reason;
@@ -148,7 +174,12 @@ export class SchedulerQueue {
     this.running = true;
     try {
       const state = await this.state();
-      const alert = state.alerts?.find(item => item.nextAt <= Date.now());
+      const now = Date.now();
+      const next = nextJob(state);
+      if ((!next || due(next) > now) && taskAlertTime(state.taskAlert, now) <= now) {
+        await this.deliverTaskAlert({ ...state.taskAlert, attemptedAt: now }); return;
+      }
+      const alert = state.alerts?.find(item => item.nextAt <= now);
       if (alert) { await this.deliver(alert); return; }
       const claimed = await this.change(async state => {
         const job = nextJob(state);

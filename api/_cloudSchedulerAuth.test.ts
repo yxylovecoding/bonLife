@@ -15,6 +15,12 @@ describe('scoped cloud scheduler execution credential', () => {
     for (const request of [req('daily-email'), req('briefing'), req('plan-details'), req('trigger-replan'), req(['hourly-replan']), req(undefined, 'POST'), req(undefined, 'DELETE'), req(undefined, 'GET', ''), req(undefined, 'GET', '1', 'Bearer wrong')])
       expect(cloudSchedulerAuthOk(request)).toBe(false);
   });
+  it('admits only the dedicated fixed POST that delivers a failure notice', () => {
+    vi.stubEnv('CLOUD_SCHEDULER_RUN_SECRET', 'dedicated');
+    expect(cloudSchedulerAuthOk(req('orche-failure-task', 'POST'))).toBe(true);
+    expect(cloudSchedulerAuthOk(req('orche-failure-task'))).toBe(false);
+    expect(cloudSchedulerAuthOk(req('trigger-replan', 'POST'))).toBe(false);
+  });
   it('fails closed when unconfigured', () => {
     vi.stubEnv('CLOUD_SCHEDULER_RUN_SECRET', ''); expect(cloudSchedulerAuthOk(req())).toBe(false);
   });

@@ -60,6 +60,8 @@ export function classify(action, status, body, attempt) {
     && /^\d{4}-\d{2}-\d{2}$/.test(body.date || '') && Number.isInteger(body.storedKeys) && body.storedKeys > 0
     ? { outcome: 'success' } : fail('backup-incomplete');
   if (status === 200 && body?.ok === true && body.skipped === 'rest-window') return { outcome: 'skipped', reason: 'rest-window' };
+  if (action === 'orche-failure-task') return status === 200 && body?.ok === true && body.sent === true
+    ? { outcome: 'success' } : fail('notice-unconfirmed');
   if (action === 'life-periods') {
     if (status === 200 && body?.ok === true && (body.connected === false ||
         (body.connected === true && typeof body.syncedAt === 'string'))) return { outcome: 'success' };
@@ -116,7 +118,8 @@ export async function callAction(action, env, attempt) {
   }
   const started = Date.now();
   try {
-    const response = await fetch(url, { headers: { Authorization: `Bearer ${secret}` },
+    const response = await fetch(url, { ...(action === 'orche-failure-task' ? { method: 'POST' } : {}),
+      headers: { Authorization: `Bearer ${secret}` },
       redirect: 'manual', signal: AbortSignal.timeout(actionTimeout(action)) });
     const body = await response.json().catch(() => null);
     logOrigin('business', action, started, response, body);
