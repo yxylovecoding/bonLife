@@ -187,9 +187,9 @@ function requiredTrainingRecovery(date: string, activeDays: ReadonlySet<string>)
 // Swimming is independent of the main rotation. Snap each pending occurrence
 // to a non-menstrual hair-wash day; several deferred occurrences merge there.
 export function swimmingTrainingDates(task: TrainingTask, today: string, through: string, settings: CycleSettings, periods: string[],
-  hairWash?: HairWashSchedule | null) {
+  hairWash?: HairWashSchedule | null, allowsDay: (date: string) => boolean = () => true) {
   const dates = new Set<string>();
-  const allowed = swimmingHairWashDates(hairWash, today, through, settings, periods);
+  const allowed = swimmingHairWashDates(hairWash, today, through, settings, periods).filter(allowsDay);
   if (!allowed.length) return dates;
   const add = (date: string) => {
     const target = allowed.find(day => day >= date && day >= today);
@@ -259,8 +259,30 @@ export function rollingTrainingPlan(year: number, month: number, today: string, 
     if (completion.project && isMainProject(completion.project) && isCalendarDate(completion.date) && completion.date <= today) activeDays.add(completion.date);
   }
   const days = calendarCells(year, month).filter((date): date is string => Boolean(date));
-  const swims = new Map(tasks.filter(task => task.rotation !== false && isSwimmingTraining(task))
-    .map(task => [trainingIdentity(task), swimmingTrainingDates(task, today, days.at(-1)!, settings, periods, source.hairWash)]));
+  // The library groups exercise names for display and completions. Forecast each
+  // concrete TickTick row from its own date, recurrence and eligible days.
+  const variantsByProject = new Map<string, TrainingTask[]>();
+  for (const task of source.tasks.filter(item => item.rotation !== false && isSwimmingTraining(item))) {
+    const key = resolveKey(trainingIdentity(task)) ?? resolveKey(task.name);
+    if (!key) continue;
+    const variants = variantsByProject.get(key) ?? [];
+    variants.push(task);
+    variantsByProject.set(key, variants);
+  }
+  const swimmingByProject = new Map<string, Map<string, TrainingTask[]>>();
+  for (const project of tasks.filter(task => task.rotation !== false && isSwimmingTraining(task))) {
+    const key = trainingIdentity(project);
+    const byDay = new Map<string, TrainingTask[]>();
+    for (const task of variantsByProject.get(key) ?? [project]) {
+      const dates = swimmingTrainingDates(task, today, days.at(-1)!, settings, periods, source.hairWash, date => allowed(task, date));
+      for (const date of dates) {
+        const matches = byDay.get(date) ?? [];
+        matches.push(task);
+        byDay.set(date, matches);
+      }
+    }
+    swimmingByProject.set(key, byDay);
+  }
   for (const date of days) {
     const done = [...(actual.get(date) ?? [])].map((key) => byKey.get(key)!);
     byDate.set(date, done);
@@ -287,7 +309,7 @@ export function rollingTrainingPlan(year: number, month: number, today: string, 
       return true;
     }).sort((a, b) => compareTrainingOrder(last.get(trainingIdentity(a)) ?? '', last.get(trainingIdentity(b)) ?? '')
       || compareTrainingOrder(trainingIdentity(a), trainingIdentity(b))).slice(0, 1);
-    let suggested = [...main, ...tasks.filter(task => allowed(task, date) && swims.get(trainingIdentity(task))?.has(date)
+    let suggested = [...main, ...tasks.filter(task => swimmingByProject.get(trainingIdentity(task))?.has(date)
       && !actual.get(date)?.has(trainingIdentity(task)))];
     if (independentSwimming) suggested = suggested.filter(task => !savedProjects.includes(trainingIdentity(task)));
     let record: TrainingRecord;
@@ -332,5 +354,5 @@ export function rollingTrainingPlan(year: number, month: number, today: string, 
     if (projects.some(isMainProject)) activeDays.add(date);
     if (plans.has(date)) { plans.set(date, record); byDate.set(date, record.completed ? done : suggested); }
   }
-  return { plans, byDate, coverage, completedByDate: actual, recoveryByDate };
+  return { plans, byDate, coverage, completedByDate: actual, recoveryByDate, swimmingByProject };
 }

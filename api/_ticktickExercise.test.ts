@@ -55,21 +55,30 @@ describe('与网页共用实际完成轮换', () => {
     expect(f.stored.get(task.id)).toMatchObject({ tags, repeatFlag: task.repeatFlag, repeatFrom: task.repeatFrom,
       priority: 5, dueDate: '2026-10-06T01:00:00.000+0000' });
   });
-  it('同名训练只给目标日适用城市的待办更新日期', async () => {
+  it('同名游泳各按自己的日期、时刻、周期和地点排期', async () => {
     const title = '游泳-运动💪🏻是生活的第一个锚点🪝';
-    const sh = workout({ id: 'city-a', title, tags: ['北京'], startDate: '2026-10-07T21:30:00+0800', dueDate: '2026-10-07T21:30:00+0800' });
-    const gz = workout({ id: 'city-b', title, tags: ['广州'], startDate: '2026-10-08T21:30:00+0800', dueDate: '2026-10-08T21:30:00+0800' });
+    const beijing = workout({ id: 'city-a', title, tags: ['北京', '洗头'], startDate: '2026-10-07T21:30:00+0800',
+      dueDate: '2026-10-07T22:00:00+0800', repeatFlag: 'RRULE:FREQ=DAILY;INTERVAL=3', reminders: ['TRIGGER:-PT15M'] });
+    const guangzhou = workout({ id: 'city-b', title, tags: ['广州', '班', '洗头'], startDate: '2026-10-06T10:00:00+0800',
+      dueDate: '2026-10-06T10:45:00+0800', repeatFlag: 'RRULE:FREQ=DAILY;INTERVAL=2' });
+    const rest = workout({ id: 'city-c', title, tags: ['广州', '常州', '休', '洗头'], startDate: '2026-10-10T17:00:00+0800',
+      dueDate: '2026-10-10T17:45:00+0800', repeatFlag: 'RRULE:FREQ=WEEKLY;BYDAY=SA' });
     training.mockResolvedValue({ year: 2026, connected: true, syncedAt: null,
       hairWash: { scheduledDate: '2026-10-05', repeatFlag: 'RRULE:FREQ=DAILY' },
-      tasks: [sh, gz].map(task => ({ id: `life:${task.id}`, name: '游泳', title, dates: [], schedule: '',
-        scheduledDate: '2026-10-05', repeatFlag: 'RRULE:FREQ=DAILY', notes: '', links: [] })) });
-    const f = fakeApi(sh, gz);
+      tasks: [beijing, guangzhou, rest].map(task => ({ id: `life:${task.id}`, name: '游泳', title, dates: [],
+        schedule: '', scheduledDate: task.startDate!.slice(0, 10), repeatFlag: task.repeatFlag, notes: '', links: [] })) });
+    const f = fakeApi(beijing, guangzhou, rest);
     const result = await syncExerciseSchedule(f.api, { rolling: true, rollingOnly: true, connectionId: 'account',
-      now: now('2026-10-05T10:00:00'),
-      calendarState: { locationTags: ['北京', '广州'], cityMap: { '2026-10-05': BEIJING, '2026-10-06': GUANGZHOU } } });
-    expect([...result.fixedDates]).toEqual([['city-a', '2026-10-05']]);
-    expect(f.update.mock.calls.map(([id]) => id)).toEqual(['city-a']);
-    expect(f.stored.get('city-b')).toEqual(gz);
+      now: now('2026-10-05T10:00:00'), calendarState: { locationTags: ['北京', '广州', '常州', '休', '班'],
+        cityMap: { '2026-10-05': GUANGZHOU, '2026-10-06': BEIJING, '2026-10-08': BEIJING, '2026-10-09': GUANGZHOU,
+          '2026-10-10': GUANGZHOU, '2026-10-11': GUANGZHOU },
+        workingMap: { '2026-10-09': true, '2026-10-10': true, '2026-10-11': false },
+        livingKindMap: { '2026-10-11': 'rest' } } });
+    expect([...result.fixedDates]).toEqual([['city-a', '2026-10-08'], ['city-b', '2026-10-09'], ['city-c', '2026-10-11']]);
+    expect(f.update.mock.calls.map(([id]) => id)).toEqual(['city-a', 'city-b', 'city-c']);
+    expect(f.stored.get('city-a')).toEqual({ ...beijing, startDate: '2026-10-08T21:30:00+0800', dueDate: '2026-10-08T22:00:00+0800' });
+    expect(f.stored.get('city-b')).toEqual({ ...guangzhou, startDate: '2026-10-09T10:00:00+0800', dueDate: '2026-10-09T10:45:00+0800' });
+    expect(f.stored.get('city-c')).toEqual({ ...rest, startDate: '2026-10-11T17:00:00+0800', dueDate: '2026-10-11T17:45:00+0800' });
   });
 
   it('只有城市标签且轮换窗口内无适用地点时，不能回退到独立重复排程', async () => {

@@ -3,7 +3,7 @@ import ICAL from 'ical.js';
 import { cycleDay } from '../src/utils/lifeCycle.js';
 import type { CycleSettings } from '../src/utils/bonLife.js';
 import { swimmingHairWashDates, type HairWashSchedule } from '../src/utils/lifeSwimming.js';
-import { isTrainingTitle, recordedTrainingProjects, rollingTrainingPlan, trainingIdentity, trainingLibrary,
+import { isSwimmingTraining, isTrainingTitle, recordedTrainingProjects, rollingTrainingPlan, trainingIdentity, trainingLibrary,
   trainingName, trainingProjectKey, type TrainingSource, type TrainingTask } from '../src/utils/lifeTraining.js';
 import { readHairWashSchedule, readSwimmingCycle } from './_lifeSwimming.js';
 import { hasTaskLocation } from './_ticktickLocation.js';
@@ -89,9 +89,11 @@ export function exerciseTarget(task: TickTickTask, options: TargetOptions): stri
 interface Deferral { projectId: string; repeatFlag: string; notBefore: string }
 interface ExerciseState { connectionId: string; deferrals: Record<string, Deferral> }
 
-export function rollingExerciseDates(today: string, source: TrainingSource, cycle: CycleSettings, periods: string[], allowed?: (task: TrainingTask, date: string) => boolean) {
+function rollingExerciseTargets(today: string, source: TrainingSource, cycle: CycleSettings, periods: string[],
+  allowed?: (task: TrainingTask, date: string) => boolean) {
   const library = trainingLibrary(source.tasks, source.settings);
   const dates = new Map<string, string>();
+  const swimming = new Map<string, string>();
   const months = new Map<string, ReturnType<typeof rollingTrainingPlan>>();
   // Look beyond this week when menstruation, recovery or recent completions
   // postpone a project. Every month still starts from the same actual history.
@@ -103,12 +105,22 @@ export function rollingExerciseDates(today: string, source: TrainingSource, cycl
     const record = forecast.plans.get(date);
     if (!record || record.completed) continue;
     for (const key of recordedTrainingProjects(record, library)) {
+      if (forecast.completedByDate.get(date)?.has(key)) continue;
       const task = library.find(task => trainingIdentity(task) === key);
-      if (task && allowed && !allowed(task, date)) continue;
-      if (!dates.has(key) && !forecast.completedByDate.get(date)?.has(key)) dates.set(key, date);
+      if (task && !isSwimmingTraining(task) && allowed && !allowed(task, date)) continue;
+      if (!dates.has(key)) dates.set(key, date);
+      const candidates = forecast.swimmingByProject.get(key)?.get(date) ?? [];
+      const onDate = candidates.filter(item => item.scheduledDate === date);
+      const swim = onDate.length === 1 ? onDate[0] : candidates.length === 1 ? candidates[0] : undefined;
+      if (swim && !swimming.has(swim.id)) swimming.set(swim.id, date);
     }
   }
-  return dates;
+  return { dates, swimming };
+}
+
+export function rollingExerciseDates(today: string, source: TrainingSource, cycle: CycleSettings, periods: string[],
+  allowed?: (task: TrainingTask, date: string) => boolean) {
+  return rollingExerciseTargets(today, source, cycle, periods, allowed).dates;
 }
 
 function deferredDate(task: TickTickTask, state: ExerciseState) {
@@ -215,21 +227,42 @@ export async function syncExerciseSchedule(api: TickTickApi, options: {
       const key = keyFor(candidate), group = variants.get(key) ?? [];
       group.push(candidate); variants.set(key, group);
     }
-    const dates = rollingExerciseDates(today, source, cycle, periods, (project, date) => {
+    const locationResults = new Map<string, boolean>();
+    const allows = (task: TickTickTask, date: string) => {
+      const key = `${task.id}:${date}`;
+      if (!locationResults.has(key)) locationResults.set(key, routineSceneMatchesDate(task, calendarState, date));
+      return locationResults.get(key)!;
+    };
+    const { dates, swimming } = rollingExerciseTargets(today, source, cycle, periods, (project, date) => {
+      if (isSwimmingTraining(project)) {
+        const task = candidateById.get(project.id);
+        return !task || allows(task, date);
+      }
       const group = variants.get(trainingIdentity(project));
-      return !group || group.some(task => routineSceneMatchesDate(task, calendarState, date));
+      return !group || group.some(task => allows(task, date));
     });
+    const swimmingKeys = new Set(library.filter(isSwimmingTraining).map(trainingIdentity));
+    const planned: { candidate: TickTickTask; target: string }[] = [];
     for (const [key, group] of variants) {
+      if (swimmingKeys.has(key)) {
+        for (const candidate of group) {
+          managedTaskIds.add(candidate.id);
+          const target = swimming.get(`${candidate.projectId}:${candidate.id}`);
+          if (target && taskDay(candidate)) planned.push({ candidate, target });
+        }
+        continue;
+      }
       const target = dates.get(key);
       for (const task of group) {
-        if (target && taskDay(task) || task.title.includes('游泳') || hasTaskLocation(task, calendarState))
-          managedTaskIds.add(task.id);
+        if (target && taskDay(task) || hasTaskLocation(task, calendarState)) managedTaskIds.add(task.id);
       }
       if (!target) continue;
-      const matching = group.filter(task => taskDay(task) && routineSceneMatchesDate(task, calendarState, target));
+      const matching = group.filter(task => taskDay(task) && allows(task, target));
       const alreadyThere = matching.filter(task => taskDay(task) === target);
       const candidate = alreadyThere.length === 1 ? alreadyThere[0] : matching.length === 1 ? matching[0] : undefined;
-      if (!candidate) continue;
+      if (candidate) planned.push({ candidate, target });
+    }
+    for (const { candidate, target } of planned) {
       fixedDates.set(candidate.id, target);
       if (taskDay(candidate) === target) continue;
       const task = await api.getTask(candidate.projectId, candidate.id);
