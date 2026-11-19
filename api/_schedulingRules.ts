@@ -48,6 +48,7 @@ export async function saveSchedulingRules(value: unknown) {
 export function schedulingRuleFailureReason(error: unknown): string {
   if (error instanceof RuleDeferredError) return error.message;
   const message = error instanceof Error ? error.message : '';
+  if (/^TickTick 运动计划同步失败，已保留原计划，请重试（(?:运动日期无效|运动重复规则暂不支持|运动重复日期过多|运动完成日期无效|找到多个洗头待办，请保留一个日期来源|洗头重复规则暂不支持|读取运动待办失败|核对运动日期或重复规则失败|读取运动完成记录失败|读取训练安排失败|保存训练安排失败)）$/.test(message)) return message;
   if (message === 'boncal 当天城市未确认' || message === '当天降雨预报未确认') return message;
   if (message === '待办快照中不存在该任务') return '已关联待办不在本轮快照中，已保留原安排';
   const status = message.match(/^TickTick (\d{3})\b/)?.[1];

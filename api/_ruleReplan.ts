@@ -424,7 +424,9 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
       if (!sleeping && (options.scope === 'full' || options.specialty === 'swimming' || ['night', 'all'].includes(options.visibilityKind ?? ''))) {
         if (!options.specialty) for (const id of (options.scope === 'full' ? ['exercise', 'exercise-rollover'] : ['exercise-rollover']) as SchedulingRuleId[]) plan(id, async branch => {
           if (periodError) throw new Error('经期来源暂不可用');
-          const result = await syncExerciseSchedule(branch.api, { connectionId, tasks: draft.values(), calendarState, excludedTaskIds: excluded, rolling: id === 'exercise', rollingOnly: id === 'exercise', now, deferState: save => draft.saveAfterCommit(id, save),
+          const result = await syncExerciseSchedule(branch.api, { connectionId, tasks: draft.values(), calendarState,
+            excludedTaskIds: excluded, rolling: id === 'exercise', rollingOnly: id === 'exercise', confirmedHistory: state,
+            now, deferState: save => draft.saveAfterCommit(id, save),
             acceptsDate: (taskId, date) => routineTaskDate(draft.committedValues().find(t => t.id === taskId)!) === date });
           branch.claimDates(result.managedTaskIds);
           if (id === 'exercise') trainingDates = result.fixedDates;
@@ -673,6 +675,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         }
       }
       let updated: number;
+      let uncertainWrite = false;
       try {
         updated = await draft.commit({ order: config.order, allowed,
           beforeUpdate: async task => {
@@ -683,6 +686,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
             await kv.set(budgetHiddenKey, budgetHidden);
           },
           failed: (ids, error) => {
+            uncertainWrite = true;
             for (const id of ids) {
               const result = run.results.find(r => r.id === id)!;
               result.status = 'failed'; result.reason = ruleTaskFailureReason(error);
@@ -716,7 +720,7 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
               }
               if ('error' in effects && effects.error) throw new Error('Outlook 写入未确认');
               result.updated = (effects.created ?? 0) + (effects.updated ?? 0);
-            } catch { result.status = 'failed'; result.reason = 'Outlook 写入未确认'; propagate(); }
+            } catch { uncertainWrite = true; result.status = 'failed'; result.reason = 'Outlook 写入未确认'; propagate(); }
           },
         });
       } catch (error) {
@@ -778,25 +782,35 @@ export async function runRuleReplan(options: { scope: SchedulingRun['scope']; sc
         state.summary = saved?.connectionId === connectionId ? saved.summary : undefined;
         state.briefing = saved?.connectionId === connectionId ? saved.briefing : undefined;
       }
+      const trainingResult = run.results.find(result => result.id === 'exercise');
+      const confirmedTasks = draft.committedValues();
+      if (options.scope === 'full' && allowed('exercise') && !historyError
+        && confirmedTasks.some(task => isExerciseTask(task) || task.title.trim() === '洗头')) {
+        try {
+          const { syncTrainingSource } = await import('./_lifeTraining.js');
+          await syncTrainingSource(Number(today.slice(0, 4)), { lockHeld: true, api,
+            confirmed: { tasks: confirmedTasks, history: state } });
+        } catch (error) {
+          if (trainingResult) {
+            trainingResult.status = 'failed'; trainingResult.reason = schedulingRuleFailureReason(error);
+            console.warn('[scheduling-training-publish]', trainingResult.reason);
+          }
+        }
+      }
       if (state.briefing && !historyError && allowed('daily-plan')) state.briefing.rules = run;
       if (!historyError && maintainsDates) await kv.set(DAILY_PLAN_KEY, state);
       await saveRun(run);
+      const complete = run.results.every(result => !handlers[result.id] || result.status === 'success' && !result.deferred);
       if (options.scope === 'full' && !sleeping) await kv.set('ticktick:daily-special-success:v1',
-        run.results.every(result => !handlers[result.id] || result.status === 'success' && !result.deferred) ? { date: today, connectionId } : null);
-      if (options.scope === 'full' && draft.committedValues().some(t => isExerciseTask(t) || t.title.trim() === '洗头')) {
-        await schedulingStage('finalize', false, async () => {
-          const { syncTrainingSource } = await import('./_lifeTraining.js');
-          await syncTrainingSource(Number(today.slice(0, 4)), { lockHeld: true, api });
-        });
-      }
+        complete ? { date: today, connectionId } : null);
       const aggregate = (id: SchedulingRuleId) => {
         const result = run.results.find(r => r.id === id)!;
         return { matched: result.matched, updated: result.updated };
       };
-      const complete = run.results.every(result => !handlers[result.id] || result.status === 'success' && !result.deferred);
       return { busy: false, connected: true, updated, alwaysToday: aggregate('always-today'), timedTasks: aggregate('visibility-timed'), dailyPlan: state.summary, details: state.briefing, rules: run,
         ...(sleeping ? { skipped: 'sleep-window' } : {}),
         rulesComplete: complete, partial: !complete && run.results.some(result => result.status === 'success'),
+        reconcile: !complete && !uncertainWrite && !sleeping,
         ...(run.results.some(r => handlers[r.id] && (r.status !== 'success' || r.deferred)) ? { error: '部分规则未完成，请查看规则状态' } : {}) };
     });
   } catch (error) {

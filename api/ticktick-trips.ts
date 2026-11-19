@@ -155,6 +155,17 @@ async function handler(req: VercelRequest, res: VercelResponse) {
   if (!isCron && !await authOk(req)) return res.status(401).json({ error: 'unauthorized' });
 
   try {
+    if (req.query?.action === 'orche-notifications') {
+      if (!isOwnerScope()) return res.status(403).json({ error: 'owner authorization required' });
+      if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ error: 'method not allowed' });
+      const value = req.method === 'POST' ? req.body : undefined;
+      if (req.method === 'POST' && (!value || typeof value !== 'object' || typeof value.endpoint !== 'string'
+        || value.endpoint.length > 2048 || !['status', 'enable', 'disable'].includes(value.action)))
+        return res.status(400).json({ error: '通知设置无效' });
+      const { schedulerPushSettings } = await import('./_cloudScheduler.js');
+      const result = await schedulerPushSettings(value && { endpoint: value.endpoint, action: value.action });
+      return res.status(result.status).json(result.body);
+    }
     if (req.query?.action === 'scheduler-status') {
       if (req.method !== 'GET') return res.status(405).json({ error: 'method not allowed' });
       if (!isOwnerScope()) return res.status(403).json({ error: 'owner authorization required' });
@@ -239,7 +250,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       const jobId = typeof req.query.jobId === 'string' && /^[a-zA-Z0-9-]{1,100}$/.test(req.query.jobId) ? req.query.jobId : undefined;
       // Snapshot reads must observe cloud updates and the Shanghai day boundary.
       res.setHeader('Cache-Control', 'no-store');
-      const [details, progress] = await Promise.all([readTickTickPlanDetails(), readOrchestrateProgress(jobId)]);
+      const [details, progress] = await Promise.all([readTickTickPlanDetails(), readOrchestrateProgress(jobId, req.query.latestJob === '1')]);
       return res.status(200).json({ details, progress });
     }
     if (req.query?.action === 'trigger-replan') {

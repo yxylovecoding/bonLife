@@ -73,14 +73,20 @@ export function classify(action, status, body, attempt) {
   if (status === 202 || action === 'hourly-replan' && status === 200 && body?.deferred === true) {
     return attempt.busy < 12 ? retry('busy', 30_000) : fail('busy');
   }
-  const safeRead = readStages.has(body?.failure?.stage) || action === 'full' && body?.failure?.stage === 'completion-archive';
-  if (['full', 'hourly-replan'].includes(action) && status === 502 && body?.failure?.retryable === true
-      && safeRead && attempt.retries < 2) return retry('retries', 30_000 * (attempt.retries + 1));
+  const safeRead = readStages.has(body?.failure?.stage) || action === 'full' && typeof body?.rulesComplete !== 'boolean' && body?.failure?.stage === 'completion-archive';
+  if (['full', 'hourly-replan'].includes(action) && status === 502 && body?.failure?.retryable === true && safeRead) {
+    return attempt.retries < 2 ? retry('retries', 30_000 * (attempt.retries + 1)) : fail('read-unavailable');
+  }
   // The backend committed/verified independent work. Do not replay it or stop
   // later independent steps merely because a source-dependent rule was held.
   if ([200, 502].includes(status) && body?.rulesComplete === false && body?.partial === true
       && !body.busy && Number.isInteger(body.completedRules) && body.completedRules > 0)
-    return { outcome: 'partial', reason: 'rules-incomplete', http: status };
+    return { outcome: 'partial', reason: 'rules-incomplete', http: status, ...(body.reconcile === true ? { reconcile: true } : {}) };
+  if (status === 502 && body?.rulesComplete === true && body?.failure?.stage === 'completion-archive')
+    return { outcome: 'partial', reason: 'completion-archive', http: status };
+  if ([200, 502].includes(status) && body?.rulesComplete === false && body.reconcile === true && !body.busy)
+    return { ...fail('rules-incomplete'), reconcile: true };
+  if (status >= 500 && !body?.failure && typeof body?.ok !== 'boolean' && !body?.error) return fail('response-unknown');
   if (status !== 200 || body?.ok !== true || body.busy || body.error) return fail('incomplete');
   if (typeof body.rulesComplete === 'boolean') return body.rulesComplete ? { outcome: 'success' } : fail('rules-incomplete');
   if (action === 'full') {

@@ -191,6 +191,8 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
         <button onClick={() => void logout()} disabled={loggingOut}>{loggingOut ? '退出中…' : '退出'}</button></div></header>
     <span className="sr-only" role="status">{orche.replanning ? '正在提交 Orchestrate…' : orche.replanMessage}</span>
     {orche.replanError && <p className="life-error" role="alert">{orche.replanError}</p>}
+    {!orche.detailsOpen && orche.progress && ['retrying', 'partial', 'failed'].includes(orche.progress.state) &&
+      <p className="life-error" role="status">{orche.progress.message}</p>}
     {orche.detailsOpen && <section id="life-orche-details" aria-label="当前排期" aria-busy={orche.detailsLoading}>
       {orche.progress && <p className={orche.progress.state === 'failed' ? 'life-error' : 'life-empty-state'} role={orche.progress.state === 'failed' ? 'alert' : 'status'}>{orche.progress.message}</p>}
       {orche.progress && (['completed', 'deferred', 'failed'] as const).map(kind => Boolean(orche.progress?.[kind]?.length) &&

@@ -9,7 +9,7 @@ import type { TickTickTask } from './_ticktickTrips';
 
 const m = vi.hoisted(() => ({ data: new Map<string, any>(), tasks: [] as TickTickTask[], history: [] as TickTickTask[], abandoned: [] as TickTickTask[], abandonedRead: vi.fn(),
   get: vi.fn(), write: vi.fn(), create: vi.fn(), historyRead: vi.fn(), snapshot: vi.fn(), fullOutlook: vi.fn(), saveOutlook: vi.fn(),
-  acquire: vi.fn(), release: vi.fn(), rain: vi.fn(), weather: vi.fn(), hourlyRain: vi.fn(), laundry: vi.fn(), exercise: vi.fn(), hairOutlook: vi.fn(), chargingOutlook: vi.fn(),
+  acquire: vi.fn(), release: vi.fn(), rain: vi.fn(), weather: vi.fn(), hourlyRain: vi.fn(), laundry: vi.fn(), exercise: vi.fn(), publishTraining: vi.fn(), hairOutlook: vi.fn(), chargingOutlook: vi.fn(),
   trip: vi.fn(), wish: vi.fn(), period: vi.fn(), pickupOutlook: vi.fn(), tagsRead: vi.fn(), locationFailure: false, realLocations: false, city: '北京' }));
 vi.mock('./_accountKv.js', () => ({ kv: {
   mget: async (...keys: string[]) => keys.map(key => structuredClone(m.data.get(key) ?? null)),
@@ -29,7 +29,7 @@ vi.mock('./_taskVisibilityRules.js', async original => {
 });
 vi.mock('./_ticktickLaundry.js', async original => ({ ...await original<typeof import('./_ticktickLaundry')>(), syncLaundrySchedule: m.laundry }));
 vi.mock('./_ticktickExercise.js', async original => ({ ...await original<typeof import('./_ticktickExercise')>(), syncExerciseSchedule: m.exercise }));
-vi.mock('./_lifeTraining.js', () => ({ syncTrainingSource: async () => ({}) }));
+vi.mock('./_lifeTraining.js', () => ({ syncTrainingSource: m.publishTraining }));
 vi.mock('./_outlookHairWash.js', () => ({ syncHairWashOutlook: m.hairOutlook }));
 vi.mock('./_outlookCharging.js', () => ({ syncChargingOutlook: m.chargingOutlook }));
 vi.mock('./_outlookLaundry.js', () => ({ syncLaundryOutlook: async () => ({ created: 0, updated: 0 }) }));
@@ -259,6 +259,7 @@ beforeEach(() => {
   m.fullOutlook.mockResolvedValue({ connected: false });
   m.laundry.mockResolvedValue({ updated: 0, managedTaskIds: new Set(), decisions: [] });
   m.exercise.mockResolvedValue({ updated: 0, managedTaskIds: new Set(), minimumDates: new Map(), fixedDates: new Map() });
+  m.publishTraining.mockResolvedValue({});
   m.hairOutlook.mockResolvedValue({ created: 0, updated: 0 }); m.chargingOutlook.mockResolvedValue({ created: 0, updated: 0 });
   m.pickupOutlook.mockResolvedValue({ created: 0, updated: 0 });
   m.trip.mockResolvedValue({}); m.wish.mockResolvedValue({}); m.period.mockResolvedValue({ created: 0, updated: 0 });
@@ -309,6 +310,15 @@ describe('每天首次 Orche 显示 BonLog 今日训练', () => {
     planned(new Map(m.tasks.map(t => [t.id, day])));
     await runRuleReplan({ scope: 'full' });
     expect(m.tasks.every(t => t.tags?.includes('hidden'))).toBe(true);
+  });
+  it('收尾保存训练快照失败时，仍回报并保留已回读的独立规则', async () => {
+    m.tasks = [workout('training'), task('fixed', { tags: ['always-today'], dueDate: '2026-11-02T00:00:00+0800' })];
+    m.publishTraining.mockRejectedValueOnce(new Error('training snapshot unavailable'));
+    const result = await runRuleReplan({ scope: 'full' });
+    expect(result).toMatchObject({ partial: true, rulesComplete: false, reconcile: true });
+    expect(status(result, 'exercise').status).toBe('failed');
+    expect(status(result, 'always-today').status).toBe('success');
+    expect(m.tasks[1].dueDate).toContain(day);
   });
   it('训练读取失败或标签写入未确认时不记录成功，修复后可继续首次处理', async () => {
     m.tasks = [workout('training')]; m.exercise.mockRejectedValue(new Error('training unavailable'));

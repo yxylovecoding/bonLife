@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-function schedulerRequest(path: '/dispatch' | '/status') {
+function schedulerRequest(path: '/dispatch' | '/status' | '/push') {
   const endpoint = process.env.CLOUD_SCHEDULER_URL?.trim();
   const secret = process.env.CLOUD_SCHEDULER_SECRET?.trim();
   if (!endpoint || !secret) throw new Error('云端调度尚未配置');
@@ -31,10 +31,10 @@ export async function readCloudSchedulerStatus() {
     throw new Error(`云端调度状态读取失败（HTTP ${response.status}）`);
   const actions = new Set(['full', 'hourly-replan', 'life-periods', 'daily-routine', 'routine-visibility',
     'night-routine', 'reading-visibility', 'hair-wash', 'monthly-backup', 'daily-email']);
-  const statuses = new Set(['queued', 'running', 'success', 'partial', 'failed', 'skipped']);
+  const statuses = new Set(['queued', 'running', 'retrying', 'success', 'partial', 'failed', 'skipped']);
   const reasons = new Set(['interrupted-response-unknown', 'rest-window', 'expired', 'batch-limit',
     'backup-incomplete', 'period-import', 'busy', 'incomplete', 'rules-incomplete', 'plan-incomplete',
-    'visibility-incomplete', 'email-cancelled', 'missing-run-secret', 'response-unknown', 'origin-not-ready']);
+    'visibility-incomplete', 'email-cancelled', 'missing-run-secret', 'response-unknown', 'origin-not-ready', 'read-unavailable', 'completion-archive']);
   const time = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
   return { schedulerHost: url.hostname, lastCronAt: time(result.lastCronAt), jobs: result.jobs.slice(-200).map((job: any) => ({
     id: typeof job.id === 'string' && /^[a-zA-Z0-9-]{1,100}$/.test(job.id) ? job.id : undefined,
@@ -45,6 +45,7 @@ export async function readCloudSchedulerStatus() {
     reason: reasons.has(job.reason) ? job.reason : undefined,
     steps: Array.isArray(job.steps) ? job.steps.filter((step: unknown) => actions.has(step as string)) : [],
     index: Number.isInteger(job.index) ? job.index : null,
+    retryRound: Number.isInteger(job.retryRound) ? job.retryRound : 0,
     warmups: Number.isInteger(job.attempt?.warmups) ? job.attempt.warmups : 0,
     results: Array.isArray(job.results) ? job.results.map((item: any) => ({
       action: actions.has(item.action) ? item.action : 'unknown',
@@ -53,4 +54,23 @@ export async function readCloudSchedulerStatus() {
       http: Number.isInteger(item.http) ? item.http : undefined,
     })) : [],
   })) };
+}
+
+
+export async function schedulerPushSettings(body?: unknown) {
+  const { url, secret } = schedulerRequest('/push');
+  const response = await fetch(url, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    redirect: 'error', signal: AbortSignal.timeout(15_000),
+  });
+  const result = await response.json().catch(() => null);
+  if (response.status === 409) return { status: 409, body: { error: '通知设备已达上限' } };
+  if (response.status === 400) return { status: 400, body: { error: '此设备的推送订阅无效' } };
+  if (response.status === 200 && /^[a-zA-Z0-9_-]{87}$/.test(result?.publicKey ?? ''))
+    return { status: 200, body: { publicKey: result.publicKey as string } };
+  if (response.status === 200 && typeof result?.enabled === 'boolean')
+    return { status: 200, body: { enabled: result.enabled as boolean } };
+  return { status: 502, body: { error: '云端通知暂不可用，请稍后重试' } };
 }

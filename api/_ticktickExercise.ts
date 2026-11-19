@@ -152,6 +152,7 @@ export async function syncExerciseSchedule(api: TickTickApi, options: {
   calendarState?: unknown;
   excludedTaskIds?: ReadonlySet<string>;
   rolling?: boolean;
+  confirmedHistory?: import('./_ticktickDailyPlan.js').DailyPlanState;
   rollingOnly?: boolean;
   acceptsDate?: (id: string, date: string) => boolean;
   deferState?: (save: () => Promise<unknown>) => void;
@@ -191,7 +192,10 @@ export async function syncExerciseSchedule(api: TickTickApi, options: {
     // a fresh forecast tomorrow; today's missed plan is not a completion.
     const today = current.late ? addDays(current.day, 1) : current.day;
     const { syncTrainingSource } = await import('./_lifeTraining.js');
-    const source = await syncTrainingSource(Number(today.slice(0, 4)), { lockHeld: true, api, publish: !options.deferState });
+    const source = await syncTrainingSource(Number(today.slice(0, 4)), {
+      lockHeld: true, api, publish: !options.deferState,
+      ...(options.confirmedHistory ? { confirmed: { tasks, history: options.confirmedHistory } } : {}),
+    });
     // Template/trip tasks and ignored tasks cannot add projects to the rotation.
     const candidateById = new Map(candidates.map(task => [`${task.projectId}:${task.id}`, task]));
     source.tasks = source.tasks.filter(task => candidateById.has(task.id));

@@ -8,7 +8,7 @@ export function useOrchestrate(onExpired: () => void) {
   const [replanning, setReplanning] = useState(false);
   const [replanMessage, setReplanMessage] = useState('');
   const [replanError, setReplanError] = useState('');
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(() => typeof location !== 'undefined' && new URLSearchParams(location.search).get('orche') === '1');
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState('');
   const [planDetails, setPlanDetails] = useState<TickTickPlanDetails | null>(null);
@@ -31,6 +31,7 @@ export function useOrchestrate(onExpired: () => void) {
       onError: setDetailsError,
       onSettled: () => setDetailsLoading(false),
       onExpired,
+      includeLatestJob: new URLSearchParams(location.search).get('orche') === '1',
       getJobId: () => jobId.current,
       onProgress: (next, readJobId) => {
         if (jobId.current !== readJobId) return;

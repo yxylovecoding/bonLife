@@ -56,3 +56,10 @@ it('队列只关联本次时间范围；不会把旧轮次的部分完成贴到�
   const next = await readOrchestrateProgress('one');
   expect(next?.state).toBe('failed'); expect(next?.completed).toBeUndefined();
 });
+it('从通知打开时优先显示当前云端补跑状态', async () => {
+  m.queue.mockResolvedValue({ jobs: [{ id: 'new', kind: 'full', status: 'retrying', reason: 'origin-not-ready',
+    scheduledAt: Date.parse('2026-11-13T02:00:00Z') }] });
+  expect(await readOrchestrateProgress(undefined, true)).toMatchObject({
+    state: 'retrying', message: 'Orchestrate 正在自动补跑 · 排期服务暂不可用',
+  });
+});

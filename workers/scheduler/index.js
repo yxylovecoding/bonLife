@@ -16,6 +16,9 @@ export default {
     if (!env.DISPATCH_SECRET || request.headers.get('Authorization') !== `Bearer ${env.DISPATCH_SECRET}`)
       return new Response(null, { status: 401 });
     const path = new URL(request.url).pathname;
+    if (path === '/push' && ['GET', 'POST'].includes(request.method)) {
+      return queue(env).fetch(new Request('https://scheduler.internal/push', request));
+    }
     if (path === '/status' && request.method === 'GET') return queue(env).fetch('https://scheduler.internal/status');
     if (path === '/dispatch' && request.method === 'POST') {
       let body;

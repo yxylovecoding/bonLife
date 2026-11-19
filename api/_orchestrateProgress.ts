@@ -24,32 +24,43 @@ function summarize(run: SchedulingRun): OrchestrateProgress | null {
   };
 }
 
-export async function readOrchestrateProgress(jobId?: string): Promise<OrchestrateProgress | null> {
-  const [latest, plan] = await Promise.all([kv.get<SchedulingRun>(RULE_RUN_KEY), kv.get<SchedulingRun>(PLAN_RUN_KEY)]);
+const reasonText: Record<string, string> = {
+  'origin-not-ready': '排期服务暂不可用',
+  'read-unavailable': '排期数据暂不可读',
+  busy: '排期服务仍在处理其他任务',
+  expired: '本轮排期已过期',
+  'rest-window': '当前为凌晨暂停时段',
+  'completion-archive': '完成记录同步未确认',
+  'response-unknown': '写入结果待核对',
+  'interrupted-response-unknown': '写入结果待核对',
+};
+
+export async function readOrchestrateProgress(jobId?: string, includeLatest = false): Promise<OrchestrateProgress | null> {
+  const [latest, plan, queue] = await Promise.all([kv.get<SchedulingRun>(RULE_RUN_KEY), kv.get<SchedulingRun>(PLAN_RUN_KEY),
+    (jobId || includeLatest) && isOwnerScope() ? readCloudSchedulerStatus().catch(() => null) : null]);
   const day = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' });
-  const today = (run: SchedulingRun | null) => Boolean(run && Number.isFinite(Date.parse(run.generatedAt))
-    && day.format(new Date(run.generatedAt)) === day.format(new Date()));
-  // A later visibility pass must not erase the day's partial plan.
-  const runs = [latest, plan].filter((run): run is SchedulingRun => today(run));
+  const today = (date: number | string) => Number.isFinite(new Date(date).getTime()) && day.format(new Date(date)) === day.format(new Date());
+  const runs = [latest, plan].filter((run): run is SchedulingRun => Boolean(run && today(run.generatedAt)));
   const current = runs.find(run => run.scope !== 'visibility') ?? runs[0];
-  if (jobId && isOwnerScope()) {
-    try {
-      const { jobs } = await readCloudSchedulerStatus();
-      const job = jobs.find(item => item.id === jobId);
-      if (!job) return { state: 'unknown', message: '本次执行状态暂未确认，请稍后查看' };
-      if (job.status === 'queued') return { state: 'queued', message: 'Orchestrate 排队中…' };
-      if (job.status === 'running') return { state: 'running', message: 'Orchestrate 排期中…' };
-      if (job.status === 'success') return { state: 'success', message: 'Orchestrate 已完成' };
-      // Attach only this job's rule trace, never an earlier same-day run.
-      const related = runs.find(run => job.startedAt != null && job.finishedAt != null
-        && Date.parse(run.generatedAt) >= job.startedAt && Date.parse(run.generatedAt) <= job.finishedAt);
-      const summary = related && summarize(related);
-      if (summary) return summary;
-      return { state: job.status === 'partial' ? 'partial' : 'failed',
-        message: job.status === 'partial' ? 'Orchestrate 部分完成，请查看 Orchestrator' : 'Orchestrate 未完成，请查看 Orchestrator' };
-    } catch { return { state: 'unknown', message: '本次执行状态暂未确认，请稍后查看' }; }
+
+  const job = jobId ? queue?.jobs.find(item => item.id === jobId) : includeLatest ? queue?.jobs
+    .filter(item => (item.kind === 'full' || item.kind === 'hourly') && item.scheduledAt != null && today(item.scheduledAt))
+    .sort((a, b) => (b.scheduledAt ?? 0) - (a.scheduledAt ?? 0))[0] : undefined;
+  if (jobId && isOwnerScope() && !job) return { state: 'unknown', message: '本次执行状态暂未确认，请稍后查看' };
+  if (!job) return current ? summarize(current) : null;
+  if (job.status === 'queued') return { state: 'queued', message: 'Orchestrate 排队中…' };
+  const related = runs.find(run => job.startedAt != null && Date.parse(run.generatedAt) >= job.startedAt
+    && Date.parse(run.generatedAt) <= (job.finishedAt ?? Date.now()));
+  const summary = related && summarize(related);
+  const reason = reasonText[job.reason ?? ''];
+  if (job.status === 'retrying' || (job.status === 'running' && job.retryRound)) {
+    return { ...summary, state: 'retrying', message: `Orchestrate 正在自动补跑${reason ? ` · ${reason}` : ''}` };
   }
-  // A missing daily snapshot is not an empty successful plan. Surface today's
-  // recorded failure without dispatching work or returning raw provider errors.
-  return current ? summarize(current) : null;
+  if (job.status === 'running') return { state: 'running', message: 'Orchestrate 排期中…' };
+  if (job.status === 'success') return { state: 'success', message: 'Orchestrate 已完成' };
+  if (job.status === 'unknown') return { state: 'unknown', message: '本次执行状态暂未确认，请稍后查看' };
+  if (reason) return { ...summary, state: job.status === 'partial' ? 'partial' : 'failed', message: `Orchestrate 未完整完成 · ${reason}` };
+  if (summary) return summary;
+  return { state: job.status === 'partial' ? 'partial' : 'failed',
+    message: job.status === 'partial' ? 'Orchestrate 部分完成，请查看 Orchestrator' : 'Orchestrate 未完成，请查看 Orchestrator' };
 }

@@ -119,27 +119,33 @@ export function trainingCompletions(tasks: TickTickTask[], today: string): Train
   return [...result.values()];
 }
 
-export async function syncTrainingSource(year: number, options: { lockHeld?: boolean; api?: TickTickApi; publish?: boolean } = {}): Promise<TrainingSource> {
+export async function syncTrainingSource(year: number, options: {
+  lockHeld?: boolean; api?: TickTickApi; publish?: boolean;
+  confirmed?: { tasks: TickTickTask[]; history: DailyPlanState };
+} = {}): Promise<TrainingSource> {
   const requestedAt = Date.now();
   const connection = await kv.get<TickTickConnection>(TICKTICK_CONNECTION_KEY);
   if (!connection) return readTrainingSource(year);
   if (!options.lockHeld) await syncSwimmingSchedule();
+  let stage = '读取运动待办';
   try {
     const token = decryptTickTickToken(connection.encryptedToken, (process.env.SYNC_SECRET || '').trim());
     const api = options.api ?? new TickTickOpenApiClient(token, (process.env.TICKTICK_API_BASE_URL || '').trim() || undefined);
-    const pending = await readAllTickTickTasks(api, [0]);
+    const pending = options.confirmed?.tasks ?? await readAllTickTickTasks(api, [0]);
+    stage = '核对运动日期或重复规则';
     const tasks = selectTrainingTasks(pending);
     const hairWash = readHairWashSchedule(pending);
     // Validate all dates/rules before replacing a working snapshot.
     tasks.forEach((task) => trainingTask(task, year));
-    const [saved, daily] = await Promise.all([kv.get<TrainingSnapshot>(TRAINING_SOURCE_KEY), kv.get<DailyPlanState>(DAILY_PLAN_KEY)]);
+    stage = '读取运动完成记录';
+    const [saved, daily] = await Promise.all([kv.get<TrainingSnapshot>(TRAINING_SOURCE_KEY), options.confirmed?.history ?? kv.get<DailyPlanState>(DAILY_PLAN_KEY)]);
     const previous = saved?.connectionId === connectionId(connection) ? saved : null;
     const history = daily?.connectionId === createHash('sha256').update(token).digest('hex') ? daily : null;
     const now = new Date();
     const through = Math.max(previous?.completions ? Date.parse(previous.syncedAt) || 0 : 0, history?.historyThrough ? Date.parse(history.historyThrough) || 0 : 0);
     const from = Math.max(now.getTime() - 60 * 86_400_000, through - 86_400_000);
     const historyProjects = [...new Set([...tasks, ...pending.filter(task => isHairWashTitle(task.title))].map(task => task.projectId))];
-    const rows = historyProjects.length ? await collectCompleted(api, historyProjects, from, now.getTime(), Date.now() + 25_000) : [];
+    const rows = !options.confirmed && historyProjects.length ? await collectCompleted(api, historyProjects, from, now.getTime(), Date.now() + 25_000) : [];
     const completions = [...new Map([...(previous?.completions ?? []), ...trainingCompletions([...(history?.history ?? []), ...rows], shanghaiDay(now))]
       .map((completion) => [`${completion.project}:${completion.date}`, completion])).values()];
     const completedDates = [...new Set([...(previous?.hairWash?.completedDates ?? []), ...[...(history?.history ?? []), ...rows]
@@ -148,7 +154,10 @@ export async function syncTrainingSource(year: number, options: { lockHeld?: boo
       .map(task => shanghaiDay(new Date(task.completedTime!)))])].sort();
     const snapshot: TrainingSnapshot = { tasks, completions, hairWash: hairWash ? { ...hairWash, completedDates } : completedDates.length ? { completedDates } : null,
       requestedAt, syncedAt: now.toISOString(), connectionId: connectionId(connection) };
-    if (options.publish === false) return readTrainingSource(year, snapshot);
+    stage = '读取训练安排';
+    const source = await readTrainingSource(year, snapshot);
+    if (options.publish === false) return source;
+    stage = '保存训练安排';
     const stored = await kv.eval<string[], number>(`
       local connection = redis.call('get', KEYS[1])
       if not connection or cjson.decode(connection).encryptedToken.data ~= ARGV[1] then return 0 end
@@ -158,6 +167,11 @@ export async function syncTrainingSource(year: number, options: { lockHeld?: boo
       return 1
     `, [TICKTICK_CONNECTION_KEY, TRAINING_SOURCE_KEY], [connection.encryptedToken.data, JSON.stringify(snapshot), String(requestedAt)]);
     if (stored !== 1) throw new Error('连接或计划已更新');
-    return readTrainingSource(year);
-  } catch { throw new Error('TickTick 运动计划同步失败，已保留原计划，请重试'); }
+    return source;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    const reason = ['运动日期无效', '运动重复规则暂不支持', '运动重复日期过多', '运动完成日期无效',
+      '找到多个洗头待办，请保留一个日期来源', '洗头重复规则暂不支持'].includes(message) ? message : stage + '失败';
+    throw new Error(`TickTick 运动计划同步失败，已保留原计划，请重试（${reason}）`, { cause: error });
+  }
 }

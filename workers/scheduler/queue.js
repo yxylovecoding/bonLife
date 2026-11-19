@@ -1,10 +1,33 @@
 import { automaticRestWindow } from '../../src/utils/schedulerTime.ts';
 import { actionTimeout, callAction } from './result.js';
 import { day } from './schedule.js';
-const pending = job => job.status === 'queued' || job.status === 'running';
+import { pushEndpoint, pushKeys, sendPush } from './push.js';
+
+const pending = job => ['queued', 'running', 'retrying'].includes(job.status);
+const orche = job => ['full', 'hourly'].includes(job.kind);
+const due = job => job.inFlightUntil || job.nextAt || 0;
+const stale = (job, now) => now - job.scheduledAt > 45 * 60_000 || day(now) !== day(job.scheduledAt);
 const freshAttempt = () => ({ busy: 0, retries: 0, batches: 0, warmups: 0 });
-// SQLite-backed Durable Object. Every transition is stored before the next HTTP request.
-// One alarm performs one bounded backend call, so a multi-step job can exceed 15 minutes.
+function nextJob({ jobs }) {
+  // Preserve serial writes even when an alarm is restored after a restart.
+  return jobs.find(job => pending(job) && job.inFlightUntil)
+    ?? jobs.reduce((next, job) => pending(job) && (!next || due(job) < due(next)) ? job : next, null);
+}
+
+function canRetry(result) {
+  return ['origin-not-ready', 'busy', 'read-unavailable'].includes(result.reason)
+    || result.reason === 'period-import' && ![401, 403].includes(result.http)
+    || result.reconcile === true;
+}
+
+function incomplete(job, now) {
+  const problem = job.results.find(result => ['failed', 'partial'].includes(result.outcome));
+  job.status = job.results.some(result => result.outcome === 'partial') ? 'partial' : 'failed';
+  job.reason ||= problem?.reason;
+  job.finishedAt = now;
+}
+
+// SQLite-backed Durable Object. Persist each claim before contacting Render.
 export class SchedulerQueue {
   constructor(ctx, env) { this.ctx = ctx; this.env = env; this.running = false; }
   async state() { return await this.ctx.storage.get('state') || { jobs: [], lastCronAt: null }; }
@@ -17,13 +40,19 @@ export class SchedulerQueue {
     });
   }
   async arm(state) {
-    const next = state.jobs.find(pending);
-    if (next) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1000, next.inFlightUntil || next.nextAt || 0));
+    const job = nextJob(state);
+    const alertAt = state.alerts?.reduce((next, alert) => Math.min(next, alert.nextAt), Infinity) ?? Infinity;
+    const next = Math.min(job ? due(job) : Infinity, alertAt);
+    if (Number.isFinite(next)) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1000, next));
     else await this.ctx.storage.deleteAlarm();
   }
   async fetch(request) {
     const path = new URL(request.url).pathname;
-    if (path === '/status') return Response.json(await this.state());
+    if (path === '/status') {
+      const { jobs, lastCronAt } = await this.state();
+      return Response.json({ jobs, lastCronAt });
+    }
+    if (path === '/push') return this.pushSettings(request);
     if (path !== '/enqueue' || request.method !== 'POST') return new Response(null, { status: 404 });
     const { jobs, cronAt, coalesce } = await request.json();
     return this.change(async state => {
@@ -31,40 +60,115 @@ export class SchedulerQueue {
       const accepted = [];
       for (const definition of jobs) {
         let existing = state.jobs.find(job => job.id === definition.id);
-        if (coalesce) existing ||= state.jobs.find(job => pending(job) && job.kind === definition.kind);
+        if (coalesce) existing ||= state.jobs.find(job => pending(job) && job.kind === definition.kind
+          && definition.steps.every(step => job.steps.includes(step)));
         if (!existing) {
           existing = { ...definition, status: 'queued', index: 0, attempt: freshAttempt(), results: [], nextAt: Date.now() };
           state.jobs.push(existing);
         }
         accepted.push({ id: existing.id, status: existing.status });
       }
-      // Retain bounded operational history; no application records are stored here.
       const cutoff = Date.now() - 3 * 86400_000;
-      state.jobs = state.jobs.filter(job => pending(job) || job.scheduledAt > cutoff).slice(-200);
+      state.jobs = state.jobs.filter(job => pending(job) || job.scheduledAt > cutoff);
+      let overflow = Math.max(0, state.jobs.length - 200);
+      state.jobs = state.jobs.filter(job => pending(job) || overflow-- <= 0);
       await this.arm(state);
       return Response.json({ ok: true, jobs: accepted }, { status: 202 });
     });
+  }
+  async pushSettings(request) {
+    if (request.method === 'GET') {
+      const { publicKey } = await this.ctx.blockConcurrencyWhile(() => pushKeys(this.ctx.storage));
+      return Response.json({ publicKey });
+    }
+    const body = await request.json().catch(() => null);
+    const endpoint = pushEndpoint(body?.endpoint);
+    if (!endpoint || !['status', 'enable', 'disable'].includes(body.action)) return new Response(null, { status: 400 });
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const subscriptions = await this.ctx.storage.get('push-subscriptions') || [];
+      if (body.action === 'status') return Response.json({ enabled: subscriptions.includes(endpoint) });
+      const updated = subscriptions.filter(value => value !== endpoint);
+      if (body.action === 'enable') {
+        if (updated.length >= 12) return new Response(null, { status: 409 });
+        updated.push(endpoint);
+      }
+      await this.ctx.storage.put('push-subscriptions', updated);
+      return Response.json({ enabled: body.action === 'enable' });
+    });
+  }
+  async noteFailure(state, job, now) {
+    if (!orche(job)) return;
+    const reason = `${job.kind}:${job.reason || 'rules-incomplete'}`;
+    const notices = state.notices ||= {};
+    if (!job.id.startsWith('manual-') && (notices[reason] || 0) > now) return;
+    if (job.notified) return;
+    const endpoints = await this.ctx.storage.get('push-subscriptions') || [];
+    if (!endpoints.length) return;
+    job.notified = true;
+    if (!job.id.startsWith('manual-')) notices[reason] = now + 6 * 3600_000;
+    (state.alerts ||= []).push({ id: job.id, nextAt: now, attempts: 0, endpoints });
+  }
+  async deliver(alert) {
+    const keys = await pushKeys(this.ctx.storage);
+    const subscribed = await this.ctx.storage.get('push-subscriptions') || [];
+    const results = await Promise.all(alert.endpoints.filter(endpoint => subscribed.includes(endpoint))
+      .map(async endpoint => ({ endpoint, outcome: await sendPush(endpoint, keys) })));
+    await this.change(async state => {
+      const expired = new Set(results.filter(result => result.outcome === 'expired').map(result => result.endpoint));
+      if (expired.size) {
+        const endpoints = await this.ctx.storage.get('push-subscriptions') || [];
+        await this.ctx.storage.put('push-subscriptions', endpoints.filter(endpoint => !expired.has(endpoint)));
+      }
+      const waiting = results.filter(result => result.outcome === 'retry').map(result => result.endpoint);
+      state.alerts = state.alerts.filter(item => item.id !== alert.id);
+      if (waiting.length && alert.attempts < 3) state.alerts.push({
+        ...alert, endpoints: waiting, attempts: alert.attempts + 1, nextAt: Date.now() + 60_000 * 2 ** alert.attempts,
+      });
+      await this.arm(state);
+    });
+  }
+  async finish(state, job, now) {
+    if (job.results.every(result => !['failed', 'partial'].includes(result.outcome))) {
+      job.status = 'success'; job.finishedAt = now; delete job.reason;
+      for (const reason of Object.keys(state.notices ?? {}))
+        if (reason.startsWith(`${job.kind}:`)) delete state.notices[reason];
+      return;
+    }
+    incomplete(job, now);
+    await this.noteFailure(state, job, now);
+    const retry = job.results.find(result => canRetry(result));
+    const round = (job.retryRound || 0) + 1;
+    const nextAt = now + 60_000 * Math.min(2 ** round, 10);
+    if (!orche(job) || !retry || stale(job, nextAt) || automaticRestWindow(new Date(nextAt))) return;
+    job.status = 'retrying'; job.retryRound = round; job.index = job.steps.indexOf(retry.action);
+    job.nextAt = nextAt; job.attempt = freshAttempt(); delete job.finishedAt;
   }
   async alarm() {
     if (this.running) return;
     this.running = true;
     try {
+      const state = await this.state();
+      const alert = state.alerts?.find(item => item.nextAt <= Date.now());
+      if (alert) { await this.deliver(alert); return; }
       const claimed = await this.change(async state => {
-        const job = state.jobs.find(pending);
+        const job = nextJob(state);
         if (!job) return null;
         const now = Date.now(), action = job.steps[job.index];
-        if ((job.inFlightUntil || job.nextAt || 0) > now) { await this.arm(state); return null; }
-        // A process restart after a write has an unknown outcome. Do not send it again.
+        if (due(job) > now) { await this.arm(state); return null; }
         if (job.inFlightUntil) {
+          delete job.inFlightUntil;
           job.status = 'failed'; job.reason = 'interrupted-response-unknown'; job.finishedAt = now;
+          await this.noteFailure(state, job, now);
           await this.arm(state); return null;
         }
-        if (automaticRestWindow(new Date(now))) {
-          job.status = 'skipped'; job.reason = 'rest-window'; job.finishedAt = now;
-          await this.arm(state); return null;
-        }
-        if (now - job.scheduledAt > 45 * 60_000 || day(now) !== day(job.scheduledAt)) {
-          job.status = 'failed'; job.reason = 'expired'; job.finishedAt = now;
+        if (automaticRestWindow(new Date(now)) || stale(job, now)) {
+          if (job.retryRound) incomplete(job, now);
+          else if (automaticRestWindow(new Date(now))) {
+            job.status = 'skipped'; job.reason = 'rest-window'; job.finishedAt = now;
+          } else {
+            job.status = 'failed'; job.reason = 'expired'; job.finishedAt = now;
+            await this.noteFailure(state, job, now);
+          }
           await this.arm(state); return null;
         }
         job.status = 'running'; job.startedAt ||= now;
@@ -84,18 +188,30 @@ export class SchedulerQueue {
           job.nextAt = Date.now() + result.delay;
         } else {
           const final = result.outcome === 'retry' ? { outcome: 'failed', reason: 'batch-limit' } : result;
-          job.results.push({ action, ...final });
-          // Archive/hair failures do not prevent the independent full plan.
-          if (final.outcome === 'skipped') {
-            job.status = 'skipped'; job.reason = final.reason;
-          } else if (final.outcome === 'failed' && !['life-periods', 'hair-wash'].includes(action)) {
-            job.status = 'failed'; job.reason = final.reason;
-          } else if (++job.index === job.steps.length) {
-            job.status = job.results.some(item => item.outcome === 'failed')
-              ? job.results.some(item => item.outcome === 'partial') ? 'partial' : 'failed'
-              : job.results.some(item => item.outcome === 'partial') ? 'partial' : 'success';
-          } else { job.attempt = freshAttempt(); job.nextAt = Date.now() + 1000; }
-          if (!pending(job)) job.finishedAt = Date.now();
+          if (final.outcome === 'skipped' && job.retryRound) {
+            incomplete(job, Date.now());
+          } else {
+            const previousIndex = job.results.findIndex(item => item.action === action);
+            const record = { action, ...final };
+            if (previousIndex === -1) job.results.push(record); else job.results[previousIndex] = record;
+            const followed = final.outcome !== 'failed' || ['life-periods', 'hair-wash'].includes(action);
+            if (final.outcome === 'skipped') {
+              job.status = 'skipped'; job.reason = final.reason; job.finishedAt = Date.now();
+            } else {
+              const next = followed ? job.steps.findIndex((step, index) => {
+                if (index <= job.index) return false;
+                const previous = job.results.find(item => item.action === step);
+                return !job.retryRound || !previous || canRetry(previous);
+              }) : -1;
+              if (next < 0) {
+                if (followed) job.index = job.steps.length;
+                delete job.reason;
+                await this.finish(state, job, Date.now());
+              } else {
+                job.index = next; job.attempt = freshAttempt(); job.nextAt = Date.now() + 1000;
+              }
+            }
+          }
         }
         await this.arm(state);
       });

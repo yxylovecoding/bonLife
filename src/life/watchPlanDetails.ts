@@ -10,6 +10,7 @@ export function watchPlanDetails(callbacks: {
   onError: (error: string) => void;
   onSettled: () => void;
   onExpired: () => void;
+  includeLatestJob?: boolean;
   getJobId?: () => string | undefined;
   onProgress?: (progress: OrchestrateProgress | null, jobId?: string) => void;
 }) {
@@ -21,7 +22,7 @@ export function watchPlanDetails(callbacks: {
     const jobId = callbacks.getJobId?.();
     callbacks.onStart();
     void requestWithRetry(async signal => {
-      const response = await accountFetch(`/api/ticktick-trips?action=plan-details${jobId ? `&jobId=${encodeURIComponent(jobId)}` : ''}`, {
+      const response = await accountFetch(`/api/ticktick-trips?action=plan-details${jobId ? `&jobId=${encodeURIComponent(jobId)}` : callbacks.includeLatestJob ? '&latestJob=1' : ''}`, {
         credentials: 'same-origin', cache: 'no-store', signal,
       });
       if (response.status === 401) { callbacks.onExpired(); return null; }

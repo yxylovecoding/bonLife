@@ -354,3 +354,54 @@ describe('dispatcher authentication', () => {
     expect((await worker.fetch(new Request('https://worker/dispatch', { method: 'POST', headers: { Authorization: 'Bearer secret' }, body: JSON.stringify({ kind: 'daily-email', id: 'x' }) }), env)).status).toBe(400);
   });
 });
+
+describe('Orche recovery and device push', () => {
+  it('resumes a confirmed partial step after restart and lets other ready jobs pass', async () => {
+    const f = fixture();
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ ok: true, rulesComplete: true }))
+      .mockResolvedValueOnce(Response.json({ ok: true, connected: false }))
+      .mockResolvedValueOnce(Response.json({ ok: true, partial: true, rulesComplete: false, completedRules: 2, reconcile: true }))
+      .mockResolvedValueOnce(good()).mockResolvedValueOnce(good());
+    vi.stubGlobal('fetch', fetcher);
+    await f.enqueue([manualJob('full', 'recover', Date.now())]);
+    await f.tick(); await f.tick(); await f.tick();
+    expect((await f.state()).jobs[0]).toMatchObject({ status: 'retrying', retryRound: 1, index: 2 });
+    await f.enqueue([manualJob('hourly', 'new', Date.now())]);
+    await f.tick();
+    expect((await f.state()).jobs.map(job => job.status)).toEqual(['retrying', 'success']);
+    await f.tick(new SchedulerQueue(f.ctx, f.env));
+    const [job] = (await f.state()).jobs;
+    expect(job).toMatchObject({ status: 'success', results: [
+      { action: 'routine-visibility', outcome: 'success' }, { action: 'life-periods', outcome: 'success' },
+      { action: 'full', outcome: 'success' },
+    ] });
+    expect(fetcher.mock.calls.map(([url]) => new URL(String(url)).searchParams.get('action'))).toEqual([
+      'routine-visibility', 'life-periods', null, 'hourly-replan', null,
+    ]);
+  });
+  it('sends an authenticated empty Web Push after uncertain writes and never retries the write', async () => {
+    const f = fixture();
+    const endpoint = 'https://fcm.googleapis.com/fcm/send/private-device';
+    const keySettings = await f.queue.fetch(new Request('https://queue/push'));
+    expect(await keySettings.json()).toEqual({ publicKey: expect.stringMatching(/^[a-zA-Z0-9_-]{87}$/) });
+    const settings = (action: string, value = endpoint) => f.queue.fetch(new Request('https://queue/push', {
+      method: 'POST', body: JSON.stringify({ action, endpoint: value }),
+    }));
+    expect((await settings('enable', 'https://fcm.googleapis.com.invalid/device')).status).toBe(400);
+    expect(await (await settings('enable')).json()).toEqual({ enabled: true });
+    const fetcher = vi.fn().mockRejectedValueOnce(new Error('write outcome unknown'))
+      .mockResolvedValueOnce(new Response(null, { status: 503 })).mockResolvedValueOnce(new Response(null, { status: 201 }));
+    vi.stubGlobal('fetch', fetcher);
+    await f.enqueue([manualJob('hourly', 'alert', Date.now())]);
+    await f.tick();
+    expect((await f.state()).jobs[0]).toMatchObject({ status: 'failed', reason: 'response-unknown' });
+    expect(await (await f.queue.fetch(new Request('https://queue/status'))).text()).not.toContain('private-device');
+    await f.tick(); await f.tick(new SchedulerQueue(f.ctx, f.env)); await f.tick();
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const [target, init] = fetcher.mock.calls[1];
+    expect(target).toBe(endpoint);
+    expect(init).toMatchObject({ method: 'POST', redirect: 'error', headers: { TTL: '3600', Topic: 'bonlog-orche' } });
+    expect(init.headers.Authorization).toMatch(/^vapid t=[\w.-]+, k=[\w-]+$/);
+    expect(init.body).toBeUndefined();
+  });
+});
