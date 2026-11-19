@@ -40,7 +40,11 @@ function line(event: OrcheJournalEvent) {
 }
 
 export function parseOrcheJournalEvents(body: unknown): OrcheJournalEvent[] | null {
-  const value = body as { events?: unknown[] } | null;
+  let input = body;
+  if (typeof input === 'string') {
+    try { input = JSON.parse(input); } catch { return null; }
+  }
+  const value = input as { events?: unknown[] } | null;
   if (!Array.isArray(value?.events) || value.events.length < 1 || value.events.length > 30) return null;
   const events: OrcheJournalEvent[] = [];
   for (const valueOfEvent of value.events) {

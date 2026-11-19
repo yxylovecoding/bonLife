@@ -1,4 +1,5 @@
 import InstallApp from '../components/InstallApp';
+import { APP_LINKS, LIFE_SECTIONS, type LifeAppKind } from '../utils/apps';
 import { makeupSummary, syncMakeupEntries } from '../utils/lifeMakeup';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { resolveSkinRecord } from '../utils/lifeSkinProgress';
@@ -32,25 +33,34 @@ const LifeDoneList = lazy(() => import('./LifeDoneList'));
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date());
-function initialDate(draft: LifeDraft | null, wellDate?: string) {
+function initialDate(app: LifeAppKind, draft: LifeDraft | null, wellDate?: string) {
   const query = new URLSearchParams(window.location.search);
   const date = wellDate || draft?.date || today();
   const requestedYear = Number(query.get('year'));
   const requestedMonth = Number(query.get('month'));
+  const initialKind = wellDate ? 'well' : wellView((draft?.kind || (Object.prototype.hasOwnProperty.call(LIFE_LABELS, query.get('kind') || '')
+    ? query.get('kind') : 'well')) as LifeView);
+  const kind = app === 'log' ? initialKind : app === 'fit' && initialKind === 'body' ? 'body' : LIFE_SECTIONS[app];
   return {
     year: !draft && !wellDate && Number.isInteger(requestedYear) && requestedYear >= 1900 && requestedYear <= 2200 ? requestedYear : Number(date.slice(0, 4)),
     month: !draft && !wellDate && requestedMonth >= 1 && requestedMonth <= 12 && Number.isInteger(requestedMonth) ? requestedMonth : Number(date.slice(5, 7)),
-    kind: wellDate ? 'well' as const : wellView((draft?.kind || (Object.keys(LIFE_LABELS).includes(query.get('kind') || '') ? query.get('kind') : 'well')) as LifeView),
+    kind,
   };
 }
 
-export default function LifeCalendar({ owner, onExpired }: { owner: string; onExpired: () => void }) {
+export default function LifeCalendar({ app, owner, onExpired }: { app: LifeAppKind; owner: string; onExpired: () => void }) {
   const orche = useOrchestrate(onExpired);
-  const [restored] = useState(() => ({ legacy: readDraft(owner), well: readWellDraft(owner) }));
+  const [restored] = useState(() => {
+    const draft = app === 'done' ? null : readDraft(owner);
+    return {
+      legacy: app === 'log' || app === 'well' && isWellKind(draft?.kind) || app === 'fit' && (draft?.kind === 'training' || draft?.kind === 'body') ? draft : null,
+      well: app === 'log' || app === 'well' ? readWellDraft(owner) : null,
+    };
+  });
   const [draft, setDraft] = useState<LifeDraft | null>(() => restored.legacy && !isWellKind(restored.legacy.kind) && !restored.well ? restored.legacy : null);
   const [wellEditing, setWellEditing] = useState<{ date: string; section?: WellKind } | null>(() => restored.well ? { date: restored.well.date }
     : restored.legacy && isWellKind(restored.legacy.kind) ? { date: restored.legacy.date, section: restored.legacy.kind } : null);
-  const [selection, setSelection] = useState(() => initialDate(restored.legacy, restored.well?.date));
+  const [selection, setSelection] = useState(() => initialDate(app, restored.legacy, restored.well?.date));
   const { year, month, kind } = selection;
   const [data, setData] = useState<LifeYear | null>(null);
   const [loading, setLoading] = useState(true);
@@ -67,6 +77,7 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
   const [loggingOut, setLoggingOut] = useState(false);
   const [saved, setSaved] = useState(false);
   const [now, setNow] = useState(today);
+  const loadCalendar = app !== 'done' || orchestratorOpen;
   const generation = useRef(0);
   const activeSync = useRef<AbortController | null>(null);
   const current = data?.year === year ? data : null;
@@ -139,6 +150,7 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
   }, [onExpired]);
 
   useEffect(() => {
+    if (!loadCalendar) return;
     const token = ++generation.current;
     const controller = new AbortController();
     activeSync.current?.abort();
@@ -146,7 +158,7 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
     void lifeRequest<LifeYear>('GET', { year }, controller.signal).then((result) => {
       if (token !== generation.current || controller.signal.aborted) return;
       setData(result); setLoading(false);
-      if (result.connected) void syncPeriods(year, token);
+      if (result.connected && app !== 'done') void syncPeriods(year, token);
     }).catch((cause) => {
       if (controller.signal.aborted || token !== generation.current) return;
       setLoading(false);
@@ -154,7 +166,7 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
       else setError(cause instanceof Error ? cause.message : '读取失败，请重试');
     });
     return () => { controller.abort(); activeSync.current?.abort(); };
-  }, [year, retry, onExpired, syncPeriods]);
+  }, [app, loadCalendar, year, retry, onExpired, syncPeriods]);
 
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -182,12 +194,12 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
   }
 
   return <main className="life-shell">
-    <header className="life-header"><div className="life-header-brand"><h1><span className="life-brand-dot" />BonLog</h1>
+    <header className="life-header"><div className="life-header-brand"><h1><span className="life-brand-dot" />{APP_LINKS[app].name}</h1>
       <div className="life-orche-actions">
         <button disabled={orche.replanning} title={orche.replanMessage || undefined} onClick={() => void orche.triggerReplan()}>{orche.replanning ? '提交中…' : 'Orche'}</button>
-        <button className="life-plan-trigger" aria-expanded={orche.detailsOpen} aria-controls="life-orche-details" onClick={orche.toggleDetails}>have orched</button>
+        <button className="life-plan-trigger" aria-expanded={orche.detailsOpen} aria-controls="life-orche-details" onClick={orche.toggleDetails}>have orchestrated</button>
       </div></div>
-      <div className="life-header-actions"><InstallApp app="log" /><button aria-haspopup="dialog" aria-controls="life-orchestrator" onClick={() => setOrchestratorOpen(true)}>Orchestrator</button>
+      <div className="life-header-actions">{app !== 'log' && <a className="life-hub-link" href={APP_LINKS.log.url}>BonLog</a>}<InstallApp app={app} /><button aria-haspopup="dialog" aria-controls="life-orchestrator" onClick={() => setOrchestratorOpen(true)}>Orchestrator</button>
         <button onClick={() => void logout()} disabled={loggingOut}>{loggingOut ? '退出中…' : '退出'}</button></div></header>
     <span className="sr-only" role="status">{orche.replanning ? '正在提交 Orchestrate…' : orche.replanMessage}</span>
     {orche.replanError && <p className="life-error" role="alert">{orche.replanError}</p>}
@@ -201,10 +213,11 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
         : orche.detailsError ? <p className="life-error" role="alert">{orche.detailsError}</p>
           : orche.planDetails ? <LifePlanDetails plan={orche.planDetails} /> : !orche.progress && <p className="life-empty-state">今日暂无排期记录</p>}
     </section>}
-    <div className="life-toolbar">
-      <nav className="life-tabs" aria-label="状态日历">{(['well', 'training', 'done'] as const).map((value) => <button key={value}
-        aria-pressed={(kind === 'body' ? 'training' : kind) === value} onClick={() => { setSelection((previous) => ({ ...previous, kind: value,
-          ...(value === 'done' && previous.kind !== 'done' ? { year: Number(now.slice(0, 4)), month: Number(now.slice(5, 7)) } : {}) })); setSaved(false); }}>{LIFE_LABELS[value]}</button>)}</nav>
+    {(app === 'log' || kind !== 'done' && kind !== 'body') && <div className="life-toolbar">
+      {app === 'log' && <nav className="life-tabs" aria-label="BonLog 独立页面">
+        {(Object.keys(LIFE_SECTIONS) as (keyof typeof LIFE_SECTIONS)[]).map(section => <a key={section}
+          href={APP_LINKS[section].url}>{APP_LINKS[section].name}</a>)}
+      </nav>}
       {kind !== 'done' && kind !== 'body' && <div className="life-date-controls">
         <button className="life-arrow" aria-label="上个月" disabled={year === 1900 && month === 1} onClick={() => shiftMonth(-1)}>‹</button>
         <select aria-label="年份" value={year} onChange={(event) => setSelection((previous) => ({ ...previous, year: Number(event.target.value) }))}>
@@ -216,7 +229,7 @@ export default function LifeCalendar({ owner, onExpired }: { owner: string; onEx
         <button className="life-arrow" aria-label="下个月" disabled={year === 2200 && month === 12} onClick={() => shiftMonth(1)}>›</button>
         <button className="life-today" onClick={() => setSelection((previous) => ({ ...previous, year: Number(now.slice(0, 4)), month: Number(now.slice(5, 7)) }))}>今天</button>
       </div>}
-    </div>
+    </div>}
     {kind === 'well' && <div className="life-skin-toolbar"><button disabled={loading || !current || Boolean(error)} onClick={() => setSkinSettingsOpen(true)}>护理方案与在用清单 ↗</button></div>}
     {kind === 'well' && !loading && current && !error && <LifeSymptomHistory kind="well" history={symptoms} onEdit={(date, section) => {
       setSelection((previous) => ({ ...previous, year: Number(date.slice(0, 4)), month: Number(date.slice(5, 7)) }));

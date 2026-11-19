@@ -200,22 +200,36 @@ export async function syncExerciseSchedule(api: TickTickApi, options: {
     const candidateById = new Map(candidates.map(task => [`${task.projectId}:${task.id}`, task]));
     source.tasks = source.tasks.filter(task => candidateById.has(task.id));
     const { cycle, periods } = await readSwimmingCycle([Number(today.slice(0, 4)), Number(addDays(today, 90).slice(0, 4))]);
-    const dates = rollingExerciseDates(today, source, cycle, periods, (project, date) => {
-      const task = candidateById.get(project.id);
-      return !task || routineSceneMatchesDate(task, calendarState, date);
-    });
     const library = trainingLibrary(source.tasks, source.settings);
     const keyFor = (task: TickTickTask) => {
       const raw = trainingProjectKey(trainingName(task.title));
-      const project = library.find(project => project.id === `${task.projectId}:${task.id}` || trainingIdentity(project) === raw);
+      const project = library.find(project => project.id === `${task.projectId}:${task.id}`
+        || trainingIdentity(project) === raw || trainingProjectKey(project.name) === raw
+        || project.aliases?.includes(raw));
       return project ? trainingIdentity(project) : raw;
     };
+    // Completion history uses one exercise name, but distinct TickTick tasks
+    // can represent that exercise in different cities or types of day.
+    const variants = new Map<string, TickTickTask[]>();
     for (const candidate of candidates.filter(task => isTrainingTitle(task.title))) {
-      const target = dates.get(keyFor(candidate));
-      // Missing hair-wash or location eligibility must not fall back to standalone recurrence.
-      if (!target && (candidate.title.includes('游泳') || hasTaskLocation(candidate, calendarState))) { managedTaskIds.add(candidate.id); continue; }
-      if (!target || !taskDay(candidate)) continue;
-      managedTaskIds.add(candidate.id);
+      const key = keyFor(candidate), group = variants.get(key) ?? [];
+      group.push(candidate); variants.set(key, group);
+    }
+    const dates = rollingExerciseDates(today, source, cycle, periods, (project, date) => {
+      const group = variants.get(trainingIdentity(project));
+      return !group || group.some(task => routineSceneMatchesDate(task, calendarState, date));
+    });
+    for (const [key, group] of variants) {
+      const target = dates.get(key);
+      for (const task of group) {
+        if (target && taskDay(task) || task.title.includes('游泳') || hasTaskLocation(task, calendarState))
+          managedTaskIds.add(task.id);
+      }
+      if (!target) continue;
+      const matching = group.filter(task => taskDay(task) && routineSceneMatchesDate(task, calendarState, target));
+      const alreadyThere = matching.filter(task => taskDay(task) === target);
+      const candidate = alreadyThere.length === 1 ? alreadyThere[0] : matching.length === 1 ? matching[0] : undefined;
+      if (!candidate) continue;
       fixedDates.set(candidate.id, target);
       if (taskDay(candidate) === target) continue;
       const task = await api.getTask(candidate.projectId, candidate.id);

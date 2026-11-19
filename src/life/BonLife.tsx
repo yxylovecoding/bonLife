@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import LoginPage from '../pages/LoginPage';
 import InstallApp from '../components/InstallApp';
+import { appIdentity, isLifeApp, APP_LINKS } from '../utils/apps';
 import { requestSession, restoreSession } from '../utils/authClient';
 import LifeCalendar from './LifeCalendar';
 import LifeBriefing from './LifeBriefing';
@@ -9,6 +10,8 @@ import './life.css';
 let sessionPromise: ReturnType<typeof restoreSession> | undefined;
 
 export default function BonLife() {
+  const { kind } = appIdentity(window.location.hostname, window.location.pathname);
+  const app = isLifeApp(kind) ? kind : 'log';
   const [owner, setOwner] = useState<string | null>(null);
   const [status, setStatus] = useState<'loading' | 'login' | 'ready' | 'error'>('loading');
   const [error, setError] = useState('');
@@ -44,9 +47,9 @@ export default function BonLife() {
 
   return <div className="bonlife">
     {status === 'loading' ? <main className="life-loading" role="status">加载中…</main>
-      : status === 'login' ? <><LoginPage title="BonLog" icon="/bonlife.svg" /><div className="app-login-install"><InstallApp app="log" /></div></>
+      : status === 'login' ? <><LoginPage title={APP_LINKS[app].name} icon="/bonlife.svg" /><div className="app-login-install"><InstallApp app={app} /></div></>
       : status === 'error' ? <main className="life-loading"><p role="alert">{error}</p><button onClick={() => window.location.reload()}>重试</button></main>
-      : new URLSearchParams(window.location.search).get('view') === 'briefing' ? <LifeBriefing onExpired={expired} />
-      : <LifeCalendar owner={owner!} onExpired={expired} />}
+      : app === 'log' && new URLSearchParams(window.location.search).get('view') === 'briefing' ? <LifeBriefing onExpired={expired} />
+      : <LifeCalendar app={app} owner={owner!} onExpired={expired} />}
   </div>;
 }

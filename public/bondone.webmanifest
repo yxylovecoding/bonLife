@@ -1,0 +1,15 @@
+{
+  "id": "/",
+  "name": "DoneList",
+  "short_name": "DoneList",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#f6f5f3",
+  "background_color": "#f6f5f3",
+  "icons": [
+    { "src": "/icons/bonlife-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/bonlife-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

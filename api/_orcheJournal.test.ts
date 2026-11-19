@@ -85,6 +85,8 @@ describe('Orche TickTick communication window', () => {
   it('validates event count and strips unknown reasons and caller text', () => {
     const event = report('failed', 'test');
     expect(parseOrcheJournalEvents({ events: [{ ...event, reason: 'PRIVATE', text: 'PRIVATE' }] })).toEqual([event]);
+    expect(parseOrcheJournalEvents(JSON.stringify({ events: [event] }))).toEqual([event]);
+    expect(parseOrcheJournalEvents('{')).toBeNull();
     expect(parseOrcheJournalEvents({ events: [{ ...event, status: 'constructor' }] })).toBeNull();
   });
 });

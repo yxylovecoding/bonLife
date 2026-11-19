@@ -2,10 +2,10 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
 import './utils/appInstall';
-import { appIdentity } from './utils/apps';
+import { appIdentity, isLifeApp } from './utils/apps';
 
 const identity = appIdentity(window.location.hostname, window.location.pathname);
-const isClothes = identity.kind === 'clothes', isLife = identity.kind === 'log';
+const isClothes = identity.kind === 'clothes', isLife = isLifeApp(identity.kind);
 // Keep loaders separate so each app loads only its own styles and data.
 const Root = isClothes ? React.lazy(() => import('./clothes/BonClothes')) : isLife
   ? React.lazy(() => import('./life/BonLife'))

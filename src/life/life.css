@@ -13,13 +13,14 @@
 .life-header h1 { margin: 0; display: flex; align-items: center; gap: 10px; font-size: 21px; font-weight: 600; letter-spacing: -.6px; }
 .life-brand-dot { width: 13px; height: 13px; border-radius: 50% 50% 50% 2px; background: #78836e; transform: rotate(-20deg); }
 .life-header-actions { display: flex; gap: 16px; }
-.life-header-actions button { display: flex; align-items: center; gap: 7px; padding: 6px 0; color: var(--life-muted); font-size: 12px; }
+.life-header-actions button, .life-hub-link { display: flex; align-items: center; gap: 7px; padding: 6px 0; color: var(--life-muted); font-size: 12px; }
 .life-connection-dot { width: 5px; height: 5px; border-radius: 50%; background: #c9cac5; }
 .life-connection-dot.connected { background: #829276; }
 .life-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
 .life-tabs { display: flex; max-width: 100%; overflow-x: auto; background: #ebece7; border-radius: 10px; padding: 3px; gap: 3px; }
-.life-tabs button { flex-shrink: 0; min-width: 70px; padding: 8px 17px; color: #74796f; font-size: 14px; }
-.life-tabs button[aria-pressed="true"] { background: #fff; color: #3f5038; box-shadow: 0 1px 3px #0000000a; }
+.life-tabs a { text-decoration: none; border-radius: 8px; }
+.life-tabs a:hover, .life-tabs a:focus-visible { background: #fff; color: #3f5038; }
+.life-tabs button, .life-tabs a { flex-shrink: 0; min-width: 70px; padding: 8px 17px; color: #74796f; font-size: 14px; }
 .life-date-controls { display: flex; align-items: center; gap: 6px; }
 .life-date-controls select { color: var(--life-ink); border: 0; background: transparent; font-size: 14px; padding: 5px 0; }
 .life-arrow { font-size: 24px; line-height: 1; width: 30px; height: 32px; color: #777c71; }
