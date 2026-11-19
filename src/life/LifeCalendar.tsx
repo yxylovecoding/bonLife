@@ -17,7 +17,7 @@ import { readWellDraft } from './wellDraft';
 import { isWellKind, wellDay, wellView, WELL_KINDS, type WellKind } from '../utils/lifeWell';
 import LifeConnection from './LifeConnection';
 import LifeCycleSettings from './LifeCycleSettings';
-import LifePlanDetails from './LifePlanDetails';
+import LifeOrcheDetails from './LifeOrcheDetails';
 import { useOrchestrate } from './useOrchestrate';
 import LifeOrchestrator from './LifeOrchestrator';
 import { useLifeTraining } from './useLifeTraining';
@@ -205,17 +205,10 @@ export default function LifeCalendar({ app, owner, onExpired }: { app: LifeAppKi
     {orche.replanError && <p className="life-error" role="alert">{orche.replanError}</p>}
     {!orche.detailsOpen && orche.progress && ['retrying', 'partial', 'failed'].includes(orche.progress.state) &&
       <p className="life-error" role="status">{orche.progress.message}</p>}
-    {orche.detailsOpen && <section id="life-orche-details" aria-label="当前排期" aria-busy={orche.detailsLoading}>
-      {orche.progress && <p className={orche.progress.state === 'failed' ? 'life-error' : 'life-empty-state'} role={orche.progress.state === 'failed' ? 'alert' : 'status'}>{orche.progress.message}</p>}
-      {orche.progress && (['completed', 'deferred', 'failed'] as const).map(kind => Boolean(orche.progress?.[kind]?.length) &&
-        <p className="life-empty-state" key={kind}>{({ completed: '已完成', deferred: '暂缓', failed: '失败' })[kind]}：{orche.progress![kind]!.join('、')}</p>)}
-      {orche.detailsLoading && !orche.planDetails ? <p className="life-empty-state" role="status">读取中…</p>
-        : orche.detailsError ? <p className="life-error" role="alert">{orche.detailsError}</p>
-          : orche.planDetails ? <LifePlanDetails plan={orche.planDetails} /> : !orche.progress && <p className="life-empty-state">今日暂无排期记录</p>}
-    </section>}
+    {orche.detailsOpen && <LifeOrcheDetails {...orche} />}
     {(app === 'log' || kind !== 'done' && kind !== 'body') && <div className="life-toolbar">
       {app === 'log' && <nav className="life-tabs" aria-label="BonLog 独立页面">
-        {(Object.keys(LIFE_SECTIONS) as (keyof typeof LIFE_SECTIONS)[]).map(section => <a key={section}
+        {(['well', 'fit', 'done', 'orche'] as const).map(section => <a key={section}
           href={APP_LINKS[section].url}>{APP_LINKS[section].name}</a>)}
       </nav>}
       {kind !== 'done' && kind !== 'body' && <div className="life-date-controls">

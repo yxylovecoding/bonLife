@@ -4,16 +4,16 @@ import { currentTickTickPlan, type TickTickPlanDetails } from '../utils/tickTick
 import { watchPlanDetails } from './watchPlanDetails';
 import type { OrchestrateProgress } from '../utils/orchestrateProgress';
 
-export function useOrchestrate(onExpired: () => void) {
+export function useOrchestrate(onExpired: () => void, loginJobId?: string) {
   const [replanning, setReplanning] = useState(false);
   const [replanMessage, setReplanMessage] = useState('');
   const [replanError, setReplanError] = useState('');
-  const [detailsOpen, setDetailsOpen] = useState(() => typeof location !== 'undefined' && new URLSearchParams(location.search).get('orche') === '1');
-  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(() => Boolean(loginJobId) || typeof location !== 'undefined' && new URLSearchParams(location.search).get('orche') === '1');
+  const [detailsLoading, setDetailsLoading] = useState(Boolean(loginJobId));
   const [detailsError, setDetailsError] = useState('');
   const [planDetails, setPlanDetails] = useState<TickTickPlanDetails | null>(null);
   const [progress, setProgress] = useState<OrchestrateProgress | null>(null);
-  const jobId = useRef<string>();
+  const jobId = useRef(loginJobId);
   const replanController = useRef<AbortController | null>(null);
   const detailsWatcher = useRef<ReturnType<typeof watchPlanDetails> | null>(null);
   const mounted = useRef(true);
@@ -36,12 +36,12 @@ export function useOrchestrate(onExpired: () => void) {
       onProgress: (next, readJobId) => {
         if (jobId.current !== readJobId) return;
         setProgress(next);
-        if (next?.state === 'success' || next?.state === 'failed' || next?.state === 'partial') jobId.current = undefined;
+        if (!loginJobId && (next?.state === 'success' || next?.state === 'failed' || next?.state === 'partial')) jobId.current = undefined;
       },
     });
     detailsWatcher.current = watcher;
     return () => { watcher.dispose(); detailsWatcher.current = null; };
-  }, [detailsOpen, onExpired]);
+  }, [detailsOpen, loginJobId, onExpired]);
 
   async function triggerReplan() {
     if (replanController.current) return;

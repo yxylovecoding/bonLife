@@ -15,6 +15,15 @@ describe('BonLog independent domains', () => {
     });
   });
 
+  it('opens the dedicated Orche login with an independent install manifest', () => {
+    const app = appIdentity('orche.bonbills.cn', '/');
+    expect(app).toMatchObject({ kind: 'orche', name: 'Orche', url: 'https://orche.bonbills.cn/' });
+    expect(isLifeApp(app.kind)).toBe(true);
+    expect(JSON.parse(readFileSync(`public${app.manifest}`, 'utf8'))).toMatchObject({
+      name: 'Orche', start_url: '/', scope: '/', display: 'standalone',
+    });
+  });
+
   it('retains existing BonLog links and the other apps', () => {
     expect(appIdentity('log.bonbills.cn', '/').kind).toBe('log');
     expect(appIdentity('life.bonbills.cn', '/').kind).toBe('log');

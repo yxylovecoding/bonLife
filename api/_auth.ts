@@ -1,18 +1,20 @@
-import { createHash, createHmac, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { kv } from './_storage.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { authorizeAccountScope } from './_accountScope.js';
+import { ORCHE_HOST } from '../src/utils/apps.js';
 
 const COOKIE_NAME = 'bonbills-session';
 const SESSION_SECONDS = 30 * 24 * 60 * 60;
 const LOGIN_WINDOW_SECONDS = 15 * 60;
 
-interface Session {
+export interface Session {
   kind: 'key' | 'account';
   accountId?: string;
   username: string;
   version: string;
   expiresAt: number;
+  orcheJobId?: string;
 }
 
 export interface BoundAccount {
@@ -194,8 +196,27 @@ export async function createSession(req: VercelRequest, res: VercelResponse, acc
     version: account ? credentialVersion(account) : legacyCredentialVersion(),
     expiresAt: Date.now() + SESSION_SECONDS * 1000,
   };
-  await kv.set(`auth:session:${digest(token).toString('hex')}`, session, { ex: SESSION_SECONDS });
+  const orcheRequestId = req.headers.host === ORCHE_HOST && session.accountId === 'legacy' ? randomUUID() : undefined;
+  if (orcheRequestId) session.orcheJobId = `manual-${orcheRequestId}`;
+  const key = `auth:session:${digest(token).toString('hex')}`;
+  await kv.set(key, session, { ex: SESSION_SECONDS });
   res.setHeader('Set-Cookie', cookie(req, token, SESSION_SECONDS));
+
+  if (orcheRequestId) {
+    try {
+      const { dispatchFullReplan } = await import('./_cloudScheduler.js');
+      const { jobId } = await dispatchFullReplan(orcheRequestId);
+      // The queue can join an existing full run. Keep that run attached to this login.
+      if (jobId !== session.orcheJobId) {
+        const confirmed = { ...session, orcheJobId: jobId };
+        await kv.set(key, confirmed, { xx: true, keepTtl: true });
+        return confirmed;
+      }
+    } catch {
+      // Login remains valid. The session can still look up the assigned ID
+      // after an uncertain queue response without dispatching a second run.
+    }
+  }
   return session;
 }
 

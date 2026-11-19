@@ -2,7 +2,7 @@
 
 核对日期：2026-11-04。已迁至 Render 免费 Web Service，在用户确认的 `xinyi's workspace` 使用新加坡 `bonbills` 服务（`srv-dbld16gu01pc739s7o2g`，`https://bonbills.onrender.com`）。17 项应用配置已迁入，PR #2 与 CPU 优化已发布。正式域名已切换，根域跳转到 `https://www.bonbills.cn`；五个业务子域的 HTTPS、正式域名登录、Turso 规则/衣柜读取及既有 R2 照片验证通过。旧 Vercel 项目保留用于回滚。
 
-BonLog 的独立入口为 `fit.bonbills.cn`（BonFit）、`well.bonbills.cn`（BonWell）、`done.bonbills.cn`（DoneList）。三者沿用当前 Render 服务、`*.bonbills.cn` 的 DNS 和 TLS，以及现有按域名隔离的登录会话。
+BonLog 的独立入口为 `fit.bonbills.cn`（BonFit）、`well.bonbills.cn`（BonWell）、`done.bonbills.cn`（DoneList）及 `orche.bonbills.cn`（Orche）。各站沿用当前 Render 服务、`*.bonbills.cn` 的 DNS 和 TLS，以及现有按域名隔离的登录会话。
 
 ## 已完成的域名切换
 

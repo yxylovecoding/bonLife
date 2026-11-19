@@ -109,6 +109,57 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('独立 Orche 登录', () => {
+  const host = 'orche.bonbills.cn';
+  const headers = { host, origin: `https://${host}` };
+
+  function worker() {
+    vi.stubEnv('CLOUD_SCHEDULER_URL', 'https://orche-test.workers.dev');
+    vi.stubEnv('CLOUD_SCHEDULER_SECRET', 'test-dispatch-secret');
+    return vi.spyOn(globalThis, 'fetch');
+  }
+
+  it('所有者登录提交一次完整排程，回读保留云端返回的合并任务 ID', async () => {
+    seedLegacyOwner();
+    const dispatch = worker().mockResolvedValueOnce(Response.json({ ok: true, jobs: [{ id: 'full-existing' }] }, { status: 202 }));
+    const signedIn = await call(request('POST', credentials, headers));
+    expect(signedIn.status).toBe(200);
+    expect(signedIn.body).toMatchObject({ authenticated: true, orcheJobId: 'full-existing' });
+    expect(dispatch).toHaveBeenCalledWith(new URL('https://orche-test.workers.dev/dispatch'), expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(String(dispatch.mock.calls[0][1]?.body))).toEqual({ kind: 'full', id: expect.stringMatching(/^[a-f0-9-]{36}$/) });
+    const cookie = signedIn.headers['Set-Cookie'].split(';')[0];
+    for (let i = 0; i < 2; i++) {
+      expect((await call(request('GET', undefined, { ...headers, cookie }))).body).toMatchObject({ orcheJobId: 'full-existing' });
+    }
+    expect((await call(request('GET', undefined, { cookie }))).body).not.toHaveProperty('orcheJobId');
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('排程提交结果未知时仍能登录并按原 ID 核对，恢复会话不重发', async () => {
+    const dispatch = worker().mockRejectedValueOnce(new TypeError('network'));
+    const signedIn = await call(request('POST', keyCredentials, headers));
+    expect(signedIn.status).toBe(200);
+    const { id } = JSON.parse(String(dispatch.mock.calls[0][1]?.body));
+    expect(signedIn.body).toMatchObject({ authenticated: true, orcheJobId: `manual-${id}` });
+    const cookie = signedIn.headers['Set-Cookie'].split(';')[0];
+    expect((await call(request('GET', undefined, { ...headers, cookie }))).body).toEqual(signedIn.body);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('访问页面、其他站点登录、跨站请求、错误凭据和非所有者均不触发排程', async () => {
+    const dispatch = worker();
+    expect((await call(request('GET', undefined, headers))).body).toEqual({ authenticated: false });
+    expect((await login()).result.body).not.toHaveProperty('orcheJobId');
+    expect((await call(request('POST', keyCredentials, { ...headers, origin: 'https://log.bonbills.cn' }))).status).toBe(403);
+    expect((await call(request('POST', { key: 'wrong' }, headers))).status).toBe(401);
+    expect((await register()).status).toBe(200);
+    const other = await call(request('POST', credentials, headers));
+    expect(other.status).toBe(200);
+    expect(other.body).not.toHaveProperty('orcheJobId');
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+});
+
 describe('账号密码与 Key 登录', () => {
   it('未登录时不返回账号或账单', async () => {
     const result = await call(request());

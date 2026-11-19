@@ -8,11 +8,11 @@ function schedulerRequest(path: '/dispatch' | '/status' | '/push') {
     throw new Error('云端调度地址无效');
   return { url, secret };
 }
-export async function dispatchFullReplan() {
+export async function dispatchFullReplan(id: string = randomUUID()) {
   const { url, secret } = schedulerRequest('/dispatch');
   const response = await fetch(url, {
     method: 'POST', headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind: 'full', id: randomUUID() }),
+    body: JSON.stringify({ kind: 'full', id }),
     redirect: 'error', signal: AbortSignal.timeout(15_000),
   });
   const result = await response.json().catch(() => null);

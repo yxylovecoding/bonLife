@@ -5,6 +5,7 @@ export interface SessionStatus {
   authenticated: boolean;
   username?: string;
   accountId?: string;
+  orcheJobId?: string;
 }
 
 export class SessionError extends Error {

@@ -1,7 +1,9 @@
 import { useState, type FormEvent } from 'react';
 import { register, removeLegacyKey, signIn } from '../utils/authClient';
 
-export default function LoginPage({ initialError = '', title = '盘账助手', icon }: { initialError?: string; title?: string; icon?: string }) {
+export default function LoginPage({ initialError = '', title = '盘账助手', icon, allowRegistration = true }: {
+  initialError?: string; title?: string; icon?: string; allowRegistration?: boolean;
+}) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -71,9 +73,9 @@ export default function LoginPage({ initialError = '', title = '盘账助手', i
           <button type="submit" className="login-submit" disabled={busy}>
             {busy ? (registering ? '注册中…' : '登录中…') : (registering ? '注册并登录' : '登录')}
           </button>
-          <button type="button" className="login-switch" disabled={busy} onClick={() => switchMode(registering ? 'login' : 'register')}>
+          {allowRegistration && <button type="button" className="login-switch" disabled={busy} onClick={() => switchMode(registering ? 'login' : 'register')}>
             {registering ? '返回登录' : '注册账号'}
-          </button>
+          </button>}
         </form>
       </section>
     </main>

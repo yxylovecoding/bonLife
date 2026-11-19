@@ -1,8 +1,14 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { ORCHE_HOST } from '../src/utils/apps.js';
 import {
   allowLoginAttempt, authenticateAccount, clearSessionCookie, createSession,
-  deleteSession, keyMatches, readOwnerAccount, readSession, registerAccount, sameOrigin,
+  deleteSession, keyMatches, readOwnerAccount, readSession, registerAccount, sameOrigin, type Session,
 } from './_auth.js';
+
+function sessionResponse(req: VercelRequest, session: Session) {
+  return { authenticated: true, username: session.username, accountId: session.accountId,
+    ...(req.headers.host === ORCHE_HOST && session.orcheJobId ? { orcheJobId: session.orcheJobId } : {}) };
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Cache-Control', 'private, no-store');
@@ -22,7 +28,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (req.method === 'GET') {
       const session = await readSession(req);
       return res.status(200).json(session
-        ? { authenticated: true, username: session.username, accountId: session.accountId }
+        ? sessionResponse(req, session)
         : { authenticated: false });
     }
     if (!req.headers['content-type']?.toLowerCase().startsWith('application/json')) {
@@ -56,17 +62,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const account = await registerAccount((username as string).trim(), password as string);
       if (!account) return res.status(409).json({ error: '账号已存在，请登录' });
       const session = await createSession(req, res, account);
-      return res.status(200).json({ authenticated: true, username: session.username, accountId: session.accountId });
+      return res.status(200).json(sessionResponse(req, session));
     }
     if (usesKey) {
       if (!keyMatches((key as string).trim())) return res.status(401).json({ error: 'Key 错误' });
       const session = await createSession(req, res, await readOwnerAccount() ?? undefined);
-      return res.status(200).json({ authenticated: true, username: session.username, accountId: session.accountId });
+      return res.status(200).json(sessionResponse(req, session));
     }
     const account = await authenticateAccount((username as string).trim(), password as string);
     if (!account) return res.status(401).json({ error: '账号或密码错误' });
     const session = await createSession(req, res, account);
-    return res.status(200).json({ authenticated: true, username: session.username, accountId: session.accountId });
+    return res.status(200).json(sessionResponse(req, session));
   } catch {
     return res.status(503).json({ error: '登录服务暂不可用，请稍后重试' });
   }
