@@ -435,3 +435,20 @@ it('persists every run result, batches unsent results and retries the same event
     { id: 'manual-restored-0', source: 'manual', status: 'success' },
   ]);
 });
+
+it('migrates an old pending failure without consuming the ID of its active recovery', async () => {
+  const f = fixture(), now = Date.now();
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(good()).mockResolvedValueOnce(sent()));
+  await f.enqueue([manualJob('hourly', 'migrate', now)]);
+  const previous = await f.state();
+  previous.taskAlert = { createdAt: now, nextAt: now, attempts: 0 };
+  Object.assign(previous.jobs[0], { status: 'retrying', retryRound: 1,
+    results: [{ action: 'hourly-replan', outcome: 'partial', reconcile: true }] });
+  await f.ctx.storage.put('state', previous);
+  await f.tick(); await f.tick();
+  expect((await f.state()).journal.entries).toMatchObject([
+    { id: 'manual-migrate-legacy-0', status: 'partial' }, { id: 'manual-migrate-1', status: 'success' },
+  ]);
+  await f.tick();
+  expect((await f.state()).journal).toBeUndefined();
+});

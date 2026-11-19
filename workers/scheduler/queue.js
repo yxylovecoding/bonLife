@@ -27,10 +27,13 @@ function recordJournal(state, job, now) {
 function migrateTaskAlert(state) {
   if (!state.taskAlert) return;
   const at = state.taskAlert.createdAt;
-  const job = state.jobs.filter(job => orche(job) && ['partial', 'failed', 'retrying'].includes(job.status)
-    && job.scheduledAt <= at).at(-1);
-  if (job) recordJournal(state, { ...job, status: job.status === 'partial' || job.results.some(result => result.outcome === 'partial')
-    ? 'partial' : 'failed' }, at);
+  const job = state.jobs.filter(job => orche(job) && job.scheduledAt <= at
+    && (['partial', 'failed', 'retrying'].includes(job.status)
+      || job.retryRound > 0 && job.startedAt <= at && job.finishedAt >= at)).at(-1);
+  // The previous outbox did not retain the attempt number. Keep this ID
+  // separate from all live attempts, including the recovery already queued.
+  if (job) recordJournal(state, { ...job, id: `${job.id}-legacy`, retryRound: 0,
+    status: job.status === 'partial' || job.results.some(result => result.outcome === 'partial') ? 'partial' : 'failed' }, at);
   delete state.taskAlert;
   delete state.lastTaskAlertDay;
 }
