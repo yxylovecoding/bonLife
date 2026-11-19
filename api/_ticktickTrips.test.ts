@@ -1220,11 +1220,13 @@ describe('TickTick 出门模板子任务标签', () => {
     for (const task of sourceTasks) expect(api.tasks.get(task.id)).toEqual(task);
   });
 
-  it.each(['出游', '心愿'])('%s 旧副本同步清理标签，保留手动标签、日期、进度和任务 ID', async (kind) => {
+  it.each(['出游', '心愿'])('%s 重复同步保留根任务和各级副本的手动标签、日期、进度和任务 ID', async (kind) => {
     const { api, sourceTasks, instance, sync } = await setup(kind);
     const ids = { ...instance.taskIdsByTemplateId };
+    const root = api.tasks.get(instance.rootTaskId!)!;
+    const rootTags = (root.tags ?? []).filter(tag => tag !== '当天');
+    root.tags = rootTags;
     const stage = api.tasks.get(ids['template-seven-months'])!;
-    // Removing routine from an instance must not copy it back from the template.
     stage.tags = ['不关我事', '手动标签', 'hidden'];
     const visa = api.tasks.get(ids['template-visa'])!;
     Object.assign(visa, {
@@ -1232,7 +1234,7 @@ describe('TickTick 出门模板子任务标签', () => {
       completedTime: '2026-09-05T01:00:00Z',
       startDate: '2026-09-05T09:00:00+0800', dueDate: '2026-09-05T10:00:00+0800', isAllDay: false,
     });
-    api.tasks.get(ids['template-photo'])!.tags = ['不关我事'];
+    delete api.tasks.get(ids['template-photo'])!.tags;
     const before = structuredClone(visa);
     const unrelated: TickTickTask = { id: 'manual-child', projectId: 'play', parentId: stage.id, title: '手动子任务', tags: ['不关我事'] };
     api.tasks.set(unrelated.id, structuredClone(unrelated));
@@ -1240,9 +1242,10 @@ describe('TickTick 出门模板子任务标签', () => {
 
     for (let run = 0; run < 2; run++) {
       await sync();
-      expect(api.tasks.get(stage.id)?.tags).toEqual(['手动标签', 'hidden', '当天']);
-      expect(api.tasks.get(visa.id)).toEqual({ ...before, tags: ['routine', '自己的标签', '当天'] });
-      expect(api.tasks.get(ids['template-photo'])?.tags).toEqual(['当天']);
+      if (kind === '出游') expect(api.tasks.get(root.id)?.tags).toEqual(rootTags);
+      expect(api.tasks.get(stage.id)?.tags).toEqual(['不关我事', '手动标签', 'hidden']);
+      expect(api.tasks.get(visa.id)).toEqual(before);
+      expect(api.tasks.get(ids['template-photo'])?.tags).toBeUndefined();
       expect(api.tasks.get(unrelated.id)).toEqual(unrelated);
       expect(instance.taskIdsByTemplateId).toEqual(ids);
       expect(api.createCalls).toBe(created);

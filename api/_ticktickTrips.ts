@@ -1192,8 +1192,8 @@ function followParentSchedule(payload: Record<string, unknown>, parent: TickTick
   };
 }
 
-function generatedTaskTags(templateTask: TickTickTask, template: TickTickTemplate, source = templateTask): string[] {
-  const tags = source.tags ?? [];
+function initialTaskTags(templateTask: TickTickTask, template: TickTickTemplate): string[] {
+  const tags = templateTask.tags ?? [];
   // Wish preparation roots are also children of the original travel template.
   const isTemplateChild = templateTask.id !== template.rootTask.id || isSevenMonthPreparationTask(templateTask);
   const cleanedTags = isTemplateChild ? tags.filter((tag) => tag.normalize('NFKC').trim() !== '不关我事') : tags;
@@ -1232,7 +1232,6 @@ function baseTaskPayload(
     ...(dueDate ? { dueDate } : {}),
     timeZone: legacySchedule ? templateTask.timeZone || 'Asia/Shanghai' : 'Asia/Shanghai',
     reminders: templateTask.reminders ?? [],
-    tags: generatedTaskTags(templateTask, template),
     ...(templateTask.repeatFlag ? { repeatFlag: templateTask.repeatFlag } : {}),
     priority: templateTask.priority ?? 0,
     sortOrder: templateTask.sortOrder ?? 0,
@@ -1503,13 +1502,16 @@ async function syncTripInstance(
       : null;
     if (!generatedTask) {
       if (generatedTaskId) forgetDateStates(instance, generatedTaskId);
-      const payload = followParentSchedule(baseTaskPayload(
-        templateTask,
-        trip,
-        template,
-        parentId,
-        initialChecklistItems(templateTask, template, trip),
-      ), scheduledParent);
+      const payload = {
+        ...followParentSchedule(baseTaskPayload(
+          templateTask,
+          trip,
+          template,
+          parentId,
+          initialChecklistItems(templateTask, template, trip),
+        ), scheduledParent),
+        tags: initialTaskTags(templateTask, template),
+      };
       const created = await api.createTask(payload);
       if (!created?.id) throw new Error('TickTick 创建任务后未返回任务 ID');
       // Keep fields from the request when an API reply contains only an ID.
@@ -1562,7 +1564,6 @@ async function syncTripInstance(
       // Omit task dates entirely for manual overrides; a metadata-only update
       // cannot reintroduce a date that the user cleared or moved again meanwhile.
       ...(manualTask ? withoutDateFields(automaticPayload) : automaticPayload),
-      tags: generatedTaskTags(templateTask, template, generatedTask),
     };
     const updated = await api.updateTask(generatedTask.id, payload);
     let resolved = { ...generatedTask, ...payload, ...updated } as TickTickTask;
@@ -1646,7 +1647,7 @@ export async function reconcileTickTickTrips(options: {
       const normalize = (value: unknown) => JSON.stringify(value ?? '');
       if ((task.status ?? 0) !== 0 || task.completedTime || task.title !== expected.title
         || normalize(task.content) !== normalize(expected.content) || normalize(task.desc) !== normalize(expected.desc)
-        || normalize(task.tags ?? []) !== normalize(expected.tags ?? []) || (task.priority ?? 0) !== (expected.priority ?? 0)
+        || normalize(task.tags ?? []) !== normalize(initialTaskTags(original, template)) || (task.priority ?? 0) !== (expected.priority ?? 0)
         || normalize(task.parentId) !== normalize(expected.parentId) || normalize(task.repeatFlag) !== normalize(expected.repeatFlag)
         || normalize(task.reminders ?? []) !== normalize(expected.reminders ?? []) || task.repeatFrom
         || !sameDateSnapshot(dateSnapshot(task), instance.taskDateStates?.[taskId]?.lastSynced ?? dateSnapshot(expected))

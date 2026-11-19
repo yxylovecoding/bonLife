@@ -47,6 +47,7 @@ it('接管已有复制项，更新标题备注和检查事项并保留容器前�
     { ...make('copy-pack', '🎒新整理箱📌', 'copy-stage'), dueDate: '2026-11-02',
       tags: ['个人标签'], items: [{ id: 'existing', title: '气泡膜📌', status: 1 }, { id: 'manual', title: '自己加的', status: 0 }] },
   ]);
+  s.remote.get('pack')!.tags = ['当天', '模板标签'];
   await syncMovingInstance(s.options);
   expect(s.api.createTask).not.toHaveBeenCalled();
   expect(s.remote.get('copy-pack')).toMatchObject({ title: '搬家-京广-11.5 · 🎒新整理箱📌', content: '(5m)', status: 0, dueDate: '2026-11-02',
@@ -54,7 +55,8 @@ it('接管已有复制项，更新标题备注和检查事项并保留容器前�
   s.remote.get('pack')!.title = '📦重新命名📌';
   s.remote.get('pack')!.items![0].title = '气泡膜两卷📌';
   await syncMovingInstance(s.options);
-  expect(s.remote.get('copy-pack')).toMatchObject({ title: '搬家-京广-11.5 · 🎒重新命名📌', items: [{ id: 'existing', title: '气泡膜两卷📌', status: 1 }, { id: 'manual' }] });
+  expect(s.remote.get('copy-pack')).toMatchObject({ title: '搬家-京广-11.5 · 🎒重新命名📌', tags: ['个人标签'],
+    items: [{ id: 'existing', title: '气泡膜两卷📌', status: 1 }, { id: 'manual' }] });
 });
 
 it('阶段完成后从活动列表消失，仍按原 ID 识别完成，不补建整个阶段及新增下级', async () => {
