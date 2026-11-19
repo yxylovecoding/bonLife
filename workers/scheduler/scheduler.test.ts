@@ -217,7 +217,7 @@ describe('durable serial execution', () => {
     await f.tick(); await f.tick(); await f.tick(); await f.tick();
     expect((await f.state()).jobs[0]).toMatchObject({ status: 'partial', index: 3,
       results: [{ action: 'routine-visibility', outcome: 'partial' }, { action: 'life-periods', outcome: 'success' }, { action: 'full', outcome: 'partial' }] });
-    expect(fetcher.mock.calls.map(([url]) => actionOf(url))).toEqual(['routine-visibility', 'life-periods', null, 'orche-failure-task']);
+    expect(fetcher.mock.calls.map(([url]) => actionOf(url))).toEqual(['routine-visibility', 'life-periods', null, 'orche-journal']);
     expect(classify('full', 200, { ...partial, rules: { results: [] } }, attempt).outcome).toBe('failed');
   });
   it('重复的定时显隐由后续完整步骤执行，队列不会提前停止或重复写', async () => {
@@ -275,7 +275,8 @@ describe('durable serial execution', () => {
     await Promise.all([f.enqueue(jobs), f.enqueue(jobs)]);
     expect((await f.state()).jobs).toHaveLength(1);
     await f.tick(); expect((await f.state()).jobs[0].status).toBe('success');
-    await f.enqueue(jobs); await f.tick(); expect(fetch).toHaveBeenCalledTimes(1);
+    await f.enqueue(jobs); await f.tick();
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => actionOf(String(url)))).toEqual(['hourly-replan', 'orche-journal']);
     await f.enqueue([manualJob('full', 'a', Date.now())], { coalesce: true });
     await f.enqueue([manualJob('full', 'b', Date.now())], { coalesce: true });
     expect((await f.state()).jobs).toHaveLength(2);
@@ -307,7 +308,7 @@ describe('durable serial execution', () => {
       .mockResolvedValueOnce(good()); vi.stubGlobal('fetch', fetcher);
     await f.enqueue(scheduledJobs(Date.now()).filter(j => j.kind === 'full'));
     await f.tick(); await f.tick(); await f.tick(); await f.tick();
-    expect(fetcher.mock.calls.map(([url]) => actionOf(url))).toEqual(['routine-visibility', 'life-periods', null, 'orche-failure-task']);
+    expect(fetcher.mock.calls.map(([url]) => actionOf(url))).toEqual(['routine-visibility', 'life-periods', null, 'orche-journal']);
     expect((await f.state()).jobs[0]).toMatchObject({ status: 'failed' });
     expect(JSON.stringify(await f.state())).not.toContain('PRIVATE');
   });
@@ -316,13 +317,12 @@ describe('durable serial execution', () => {
     const f = fixture(); vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(Response.json({ ok: true, sleepTags: { complete: true }, nightRoutine: {}, exercise: {} }))
       .mockResolvedValueOnce(Response.json({ ok: true, connected: false }))
-      .mockResolvedValueOnce(good()));
+      .mockResolvedValueOnce(good()).mockResolvedValueOnce(sent()));
     await f.enqueue(scheduledJobs(Date.now()).filter(j => j.kind === 'full'));
     await f.tick(); await f.tick(); await f.tick(); await f.tick();
     expect((await f.state()).jobs[0].status).toBe('success');
-    expect(fetch).toHaveBeenCalledTimes(3);
-    expect(vi.mocked(fetch).mock.calls.map(([url]) => new URL(String(url)).searchParams.get('action') ?? 'full'))
-      .toEqual(['routine-visibility', 'life-periods', 'full']);
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => actionOf(String(url)) ?? 'full'))
+      .toEqual(['routine-visibility', 'life-periods', 'full', 'orche-journal']);
   });
   it('skips an email step persisted by an older deployment without any HTTP request', async () => {
     const f = fixture(); vi.stubGlobal('fetch', vi.fn());
@@ -336,7 +336,7 @@ describe('durable serial execution', () => {
     const f = fixture(); vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ error: true }, { status: 502 })));
     await f.enqueue(scheduledJobs(Date.now())); await f.tick(); await f.tick();
     expect((await f.state()).jobs[0].status).toBe('failed');
-    expect(vi.mocked(fetch).mock.calls.map(([url]) => actionOf(String(url)))).toEqual(['routine-visibility', 'orche-failure-task']);
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => actionOf(String(url)))).toEqual(['routine-visibility', 'orche-journal']);
   });
   it('expires stale jobs and bounds restoration attempts', async () => {
     const f = fixture(); vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Response.json({ sleepTags: { complete: false } }, { status: 202 })));
@@ -378,8 +378,9 @@ describe('Orche recovery and device push', () => {
       { action: 'routine-visibility', outcome: 'success' }, { action: 'life-periods', outcome: 'success' },
       { action: 'full', outcome: 'success' },
     ] });
+    expect((await f.state()).journal.entries).toMatchObject([{ id: 'manual-recover-1', status: 'success', attempt: 1 }]);
     expect(fetcher.mock.calls.map(([url]) => new URL(String(url)).searchParams.get('action'))).toEqual([
-      'routine-visibility', 'life-periods', null, 'hourly-replan', 'orche-failure-task', null,
+      'routine-visibility', 'life-periods', null, 'hourly-replan', 'orche-journal', null,
     ]);
   });
   it('sends an authenticated empty Web Push after uncertain writes and never retries the write', async () => {
@@ -410,25 +411,27 @@ describe('Orche recovery and device push', () => {
 });
 
 
-it('persists and retries one TickTick alert per Shanghai day while independent Orche jobs keep running', async () => {
+it('persists every run result, batches unsent results and retries the same event IDs', async () => {
   const f = fixture();
   const failure = () => Response.json({ ok: false }, { status: 502 });
   const fetcher = vi.fn().mockResolvedValueOnce(failure()).mockResolvedValueOnce(failure())
-    .mockResolvedValueOnce(failure()).mockResolvedValueOnce(sent()).mockResolvedValueOnce(failure());
+    .mockResolvedValueOnce(good()).mockResolvedValueOnce(sent());
   vi.stubGlobal('fetch', fetcher);
-  await f.enqueue([manualJob('hourly', 'broken-1', Date.now())]);
+  await f.enqueue([manualJob('hourly', 'broken', Date.now())]);
   await f.tick();
-  expect((await f.state()).taskAlert).toBeDefined();
+  expect((await f.state()).journal.entries).toMatchObject([{ id: 'manual-broken-0', status: 'failed' }]);
   await f.tick(new SchedulerQueue(f.ctx, f.env));
-  expect((await f.state()).taskAlert?.attempts).toBe(1);
-  await f.enqueue([manualJob('hourly', 'broken-2', Date.now())]);
-  await f.tick(); await f.tick(); // A new ready Orche can run while the delivery waits.
-  expect((await f.state()).lastTaskAlertDay).toBe('2026-10-24');
-  await f.enqueue([manualJob('hourly', 'broken-3', Date.now())]);
-  await f.tick();
-  expect((await f.state()).taskAlert).toBeUndefined();
+  expect((await f.state()).journal.attempts).toBe(1);
+  await f.enqueue([manualJob('hourly', 'restored', Date.now())]);
+  await f.tick(); await f.tick();
+  expect((await f.state()).journal).toBeUndefined();
   expect(fetcher.mock.calls.map(([url, request]) => [actionOf(url), request.method])).toEqual([
-    ['hourly-replan', undefined], ['orche-failure-task', 'POST'], ['hourly-replan', undefined],
-    ['orche-failure-task', 'POST'], ['hourly-replan', undefined],
+    ['hourly-replan', undefined], ['orche-journal', 'POST'], ['hourly-replan', undefined],
+    ['orche-journal', 'POST'],
+  ]);
+  const lastBatch = JSON.parse(fetcher.mock.calls[3][1].body);
+  expect(lastBatch.events).toMatchObject([
+    { id: 'manual-broken-0', source: 'manual', status: 'failed' },
+    { id: 'manual-restored-0', source: 'manual', status: 'success' },
   ]);
 });

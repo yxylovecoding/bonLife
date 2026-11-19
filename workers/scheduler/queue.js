@@ -8,10 +8,31 @@ const orche = job => ['full', 'hourly'].includes(job.kind);
 const due = job => job.inFlightUntil || job.nextAt || 0;
 const stale = (job, now) => now - job.scheduledAt > 45 * 60_000 || day(now) !== day(job.scheduledAt);
 const freshAttempt = () => ({ busy: 0, retries: 0, batches: 0, warmups: 0 });
-function taskAlertTime(alert, now) {
+function journalTime(alert, now) {
   if (!alert) return Infinity;
   const next = Math.max(now, alert.nextAt);
   return automaticRestWindow(new Date(next)) ? Date.parse(`${day(next)}T05:01:00+08:00`) : next;
+}
+function recordJournal(state, job, now) {
+  if (!orche(job)) return;
+  const attempt = job.retryRound || 0;
+  const id = `${job.id}-${attempt}`;
+  const outbox = state.journal ||= { entries: [], attempts: 0, nextAt: now };
+  if (!outbox.entries.some(event => event.id === id)) outbox.entries.push({
+    id, at: now, status: job.status, attempt,
+    source: job.id.startsWith('manual-') ? 'manual' : job.kind,
+    ...(job.reason ? { reason: job.reason } : {}),
+  });
+}
+function migrateTaskAlert(state) {
+  if (!state.taskAlert) return;
+  const at = state.taskAlert.createdAt;
+  const job = state.jobs.filter(job => orche(job) && ['partial', 'failed', 'retrying'].includes(job.status)
+    && job.scheduledAt <= at).at(-1);
+  if (job) recordJournal(state, { ...job, status: job.status === 'partial' || job.results.some(result => result.outcome === 'partial')
+    ? 'partial' : 'failed' }, at);
+  delete state.taskAlert;
+  delete state.lastTaskAlertDay;
 }
 function nextJob({ jobs }) {
   // Preserve serial writes even when an alarm is restored after a restart.
@@ -47,7 +68,7 @@ export class SchedulerQueue {
   async arm(state) {
     const job = nextJob(state);
     const alertAt = state.alerts?.reduce((next, alert) => Math.min(next, alert.nextAt), Infinity) ?? Infinity;
-    const next = Math.min(job ? due(job) : Infinity, alertAt, taskAlertTime(state.taskAlert, Date.now()));
+    const next = Math.min(job ? due(job) : Infinity, alertAt, journalTime(state.journal ?? state.taskAlert, Date.now()));
     if (Number.isFinite(next)) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1000, next));
     else await this.ctx.storage.deleteAlarm();
   }
@@ -61,6 +82,7 @@ export class SchedulerQueue {
     if (path !== '/enqueue' || request.method !== 'POST') return new Response(null, { status: 404 });
     const { jobs, cronAt, coalesce } = await request.json();
     return this.change(async state => {
+      migrateTaskAlert(state);
       if (cronAt) state.lastCronAt = Math.max(state.lastCronAt || 0, cronAt);
       const accepted = [];
       for (const definition of jobs) {
@@ -103,8 +125,6 @@ export class SchedulerQueue {
   }
   async noteFailure(state, job, now) {
     if (!orche(job)) return;
-    if (state.lastTaskAlertDay !== day(now) && !state.taskAlert)
-      state.taskAlert = { createdAt: now, nextAt: now, attempts: 0 };
     const reason = `${job.kind}:${job.reason || 'rules-incomplete'}`;
     const notices = state.notices ||= {};
     if (!job.id.startsWith('manual-') && (notices[reason] || 0) > now) return;
@@ -134,21 +154,21 @@ export class SchedulerQueue {
       await this.arm(state);
     });
   }
-  async deliverTaskAlert(alert) {
-    const result = alert.attemptedAt - alert.createdAt < 86400_000
-      ? await callAction('orche-failure-task', this.env, { ...freshAttempt(), warmups: alert.attempts }) : null;
+  async deliverJournal(journal) {
+    const entries = journal.entries.slice(0, 30);
+    const result = await callAction('orche-journal', this.env, { ...freshAttempt(), warmups: journal.attempts }, entries);
     await this.change(async state => {
       const now = Date.now();
-      if (result?.outcome === 'success') {
-        state.lastTaskAlertDay = day(alert.attemptedAt);
-        delete state.taskAlert;
-        console.info('[orche-failure-task]', 'confirmed');
-      } else if (now - alert.createdAt >= 86400_000) {
-        delete state.taskAlert;
+      if (result.outcome === 'success') {
+        const sent = new Set(entries.map(entry => entry.id));
+        const remaining = state.journal.entries.filter(entry => !sent.has(entry.id));
+        if (remaining.length) state.journal = { entries: remaining, nextAt: now, attempts: 0 };
+        else delete state.journal;
+        console.info('[orche-journal]', 'confirmed', entries.length);
       } else {
-        const attempts = alert.attempts + 1;
-        state.taskAlert = { createdAt: alert.createdAt, attempts,
-          nextAt: now + 30_000 * Math.min(2 ** (attempts - 1), 30) };
+        const attempts = journal.attempts + 1;
+        state.journal.attempts = attempts;
+        state.journal.nextAt = now + 30_000 * Math.min(2 ** (attempts - 1), 30);
       }
       await this.arm(state);
     });
@@ -156,11 +176,13 @@ export class SchedulerQueue {
   async finish(state, job, now) {
     if (job.results.every(result => !['failed', 'partial'].includes(result.outcome))) {
       job.status = 'success'; job.finishedAt = now; delete job.reason;
+      recordJournal(state, job, now);
       for (const reason of Object.keys(state.notices ?? {}))
         if (reason.startsWith(`${job.kind}:`)) delete state.notices[reason];
       return;
     }
     incomplete(job, now);
+    recordJournal(state, job, now);
     await this.noteFailure(state, job, now);
     const retry = job.results.find(result => canRetry(result));
     const round = (job.retryRound || 0) + 1;
@@ -174,10 +196,14 @@ export class SchedulerQueue {
     this.running = true;
     try {
       const state = await this.state();
+      if (state.taskAlert) {
+        await this.change(async state => { migrateTaskAlert(state); await this.arm(state); });
+        return;
+      }
       const now = Date.now();
       const next = nextJob(state);
-      if ((!next || due(next) > now) && taskAlertTime(state.taskAlert, now) <= now) {
-        await this.deliverTaskAlert({ ...state.taskAlert, attemptedAt: now }); return;
+      if ((!next || due(next) > now) && journalTime(state.journal, now) <= now) {
+        await this.deliverJournal(state.journal); return;
       }
       const alert = state.alerts?.find(item => item.nextAt <= now);
       if (alert) { await this.deliver(alert); return; }
@@ -189,6 +215,7 @@ export class SchedulerQueue {
         if (job.inFlightUntil) {
           delete job.inFlightUntil;
           job.status = 'failed'; job.reason = 'interrupted-response-unknown'; job.finishedAt = now;
+          recordJournal(state, job, now);
           await this.noteFailure(state, job, now);
           await this.arm(state); return null;
         }
@@ -198,6 +225,7 @@ export class SchedulerQueue {
             job.status = 'skipped'; job.reason = 'rest-window'; job.finishedAt = now;
           } else {
             job.status = 'failed'; job.reason = 'expired'; job.finishedAt = now;
+            recordJournal(state, job, now);
             await this.noteFailure(state, job, now);
           }
           await this.arm(state); return null;

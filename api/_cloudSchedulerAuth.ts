@@ -6,7 +6,7 @@ export function cloudSchedulerAuthOk(req: VercelRequest) {
   const secret = process.env.CLOUD_SCHEDULER_RUN_SECRET?.trim();
   const action = req.query?.action ?? '';
   if (!secret || req.query?.scheduler !== '1' || typeof action !== 'string'
-    || !(req.method === 'GET' && actions.has(action) || req.method === 'POST' && action === 'orche-failure-task')) return false;
+    || !(req.method === 'GET' && actions.has(action) || req.method === 'POST' && action === 'orche-journal')) return false;
   const actual = Buffer.from(req.headers.authorization || '');
   const expected = Buffer.from(`Bearer ${secret}`);
   return actual.length === expected.length && timingSafeEqual(Uint8Array.from(actual), Uint8Array.from(expected));

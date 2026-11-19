@@ -60,7 +60,7 @@ export function classify(action, status, body, attempt) {
     && /^\d{4}-\d{2}-\d{2}$/.test(body.date || '') && Number.isInteger(body.storedKeys) && body.storedKeys > 0
     ? { outcome: 'success' } : fail('backup-incomplete');
   if (status === 200 && body?.ok === true && body.skipped === 'rest-window') return { outcome: 'skipped', reason: 'rest-window' };
-  if (action === 'orche-failure-task') return status === 200 && body?.ok === true && body.sent === true
+  if (action === 'orche-journal') return status === 200 && body?.ok === true && body.sent === true
     ? { outcome: 'success' } : fail('notice-unconfirmed');
   if (action === 'life-periods') {
     if (status === 200 && body?.ok === true && (body.connected === false ||
@@ -103,7 +103,7 @@ export function classify(action, status, body, attempt) {
   }
   return { outcome: 'success' };
 }
-export async function callAction(action, env, attempt) {
+export async function callAction(action, env, attempt, events) {
   // Also suppress email steps already persisted by an older deployment.
   if (action === 'daily-email') return { outcome: 'skipped', reason: 'email-cancelled' };
   const backup = action === 'monthly-backup';
@@ -118,8 +118,8 @@ export async function callAction(action, env, attempt) {
   }
   const started = Date.now();
   try {
-    const response = await fetch(url, { ...(action === 'orche-failure-task' ? { method: 'POST' } : {}),
-      headers: { Authorization: `Bearer ${secret}` },
+    const response = await fetch(url, { ...(action === 'orche-journal' ? { method: 'POST', body: JSON.stringify({ events }) } : {}),
+      headers: { Authorization: `Bearer ${secret}`, ...(action === 'orche-journal' ? { 'Content-Type': 'application/json' } : {}) },
       redirect: 'manual', signal: AbortSignal.timeout(actionTimeout(action)) });
     const body = await response.json().catch(() => null);
     logOrigin('business', action, started, response, body);

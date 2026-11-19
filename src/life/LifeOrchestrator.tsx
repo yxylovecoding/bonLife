@@ -22,6 +22,7 @@ export default function LifeOrchestrator({ onClose, onExpired, onManageOutlook, 
           <button type="button" onClick={onManageOutlook}>连接 Outlook</button>
           <button type="button" disabled={cycleDisabled} onClick={onManageCycle}>经期设置</button>
           <LifeOrcheNotifications />
+          <a href="/api/ticktick-trips?action=orche-journal" target="_blank" rel="noreferrer">Orche 运行记录</a>
         </div>
         {recordsControlsRef && <div ref={recordsControlsRef} />}
         <LifeSchedulingRules onExpired={onExpired} onManageOutlook={onManageOutlook} />

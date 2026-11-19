@@ -236,14 +236,25 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     }
     if (req.query?.action === 'daily-email') return res.status(410).json({ error: '每日邮件已取消' });
     if (isCron && automaticRestWindow()) return res.status(200).json({ ok: true, skipped: 'rest-window' });
-    if (req.query?.action === 'orche-failure-task') {
+    if (req.query?.action === 'orche-journal') {
+      if (!isOwnerScope()) return res.status(403).json({ error: 'owner authorization required' });
+      const { deliverOrcheJournal, parseOrcheJournalEvents, readOrcheJournal } = await import('./_orcheJournal.js');
+      if (req.method === 'GET') {
+        const month = req.query.month ?? shanghaiDate().slice(0, 7);
+        if (typeof month !== 'string' || !/^20\d{2}-(?:0[1-9]|1[0-2])$/.test(month))
+          return res.status(400).json({ error: '月份格式应为 YYYY-MM' });
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        return res.status(200).send(await readOrcheJournal(month));
+      }
       if (!isCron || req.method !== 'POST') return res.status(403).json({ error: 'scheduler authorization required' });
+      const events = parseOrcheJournalEvents(req.body);
+      if (!events) return res.status(400).json({ error: 'invalid journal events' });
       try {
-        const { deliverOrcheFailureTask } = await import('./_orcheFailureTask.js');
-        const result = await deliverOrcheFailureTask();
+        const result = await deliverOrcheJournal(events);
+        if (result.ok) console.info('[orche-journal]', 'confirmed', events.length);
         return res.status(result.ok ? 200 : 503).json(result);
       } catch {
-        console.warn('[orche-failure-task]', 'unconfirmed');
+        console.warn('[orche-journal]', 'unconfirmed');
         return res.status(503).json({ ok: false });
       }
     }
